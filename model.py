@@ -8,7 +8,7 @@ import pdb
 class FeatureExtractorPaired(nn.Module):
     def __init__(self, trainset_size = 0  , in_num_ch=1, img_size=(32,64,64), inter_num_ch=16, kernel_size=3, conv_act='relu',dropout=0.2, batch_size = 80):
         super(FeatureExtractorPaired, self).__init__()
-        self.tau = Parameter(torch.ones(2048).double())# initial "neutral" tau direction, which gets learned in training
+        self.tau = Parameter(torch.ones(2048).float())# initial "neutral" tau direction, which gets learned in training
         ## Encode to 2048-vector, set as parameter for easy access during training
 
         self.relu_maxpool_cur_1 = nn.Sequential(
@@ -69,7 +69,28 @@ class FeatureExtractorPaired(nn.Module):
         self.conv4_b = nn.Sequential(
                         nn.Conv3d(2*inter_num_ch, 2*inter_num_ch, kernel_size=3, padding=1),
         )
+     def forward(self, x):
+        out1 =  self.conv1(x)
+        out1 =  self.conv1_b(out1)
+        out1 += self.conv_1s_1(x)
+        out1 = self.relu_maxpool_cur_1(out1)
 
+        out2 =  self.conv2(out1)
+        out2 =  self.conv2_b(out2)
+        out2 += self.conv_1s_2(out1)
+        out2 = self.relu_maxpool_cur_2(out2)
+
+        out3 =  self.conv3(out2)
+        out3 =  self.conv3_b(out3)
+        out3 += self.conv_1s_3(out2)
+        out3 = self.relu_maxpool_cur_3(out3)
+
+        out4 =  self.conv4(out3)
+        out4 =  self.conv4_b(out4)
+        out4 += self.conv_1s_4(out3)
+        out4 = self.relu_maxpool_cur_4(out4)
+
+        return out4
 class FeatureExtractorRes(nn.Module):
     def __init__(self, cf_kernel, trainset_size = 0  , in_num_ch=1, img_size=(32,64,64), inter_num_ch=16, kernel_size=3, conv_act='relu',dropout=0.2, batch_size = 80):
         super(FeatureExtractorRes, self).__init__()
