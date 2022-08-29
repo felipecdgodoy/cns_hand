@@ -389,7 +389,7 @@ def test(feature_extractor, classifier_ucsf, loader, lamb=0.5, fold=None, epoch=
     overall_accuracy = round(overall_accuracy,3)
 
 
-    paired_loss_avg = paired_loss_avg / (i + 1)
+    paired_loss_avg = paired_loss_avg / (num_samples + 1)
 
     return overall_accuracy, paired_loss_avg, accuracy_class, accuracy_dataset#, distance, roc_hiv, roc_cd
 
@@ -709,7 +709,7 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,final_t
         # csv_logger.writerow(row)
 
         #UNCOMMENT TO LOG TRAINING STATS TO WANDB
-        # wandb.log({ "train ploss": round((paired_loss_avg / (i + 1)),3), 'test_ploss': round(test_ploss,3), 'train_acc': round(overall_accuracy,3), 'test_acc': test_acc,'train_ucsf_ctrl':train_ucsf_ctrl, 'train_ucsf_mci':train_ucsf_mci,
+        # wandb.log({ "train ploss": round((paired_loss_avg / (num_samples + 1)),3), 'test_ploss': round(test_ploss,3), 'train_acc': round(overall_accuracy,3), 'test_acc': test_acc,'train_ucsf_ctrl':train_ucsf_ctrl, 'train_ucsf_mci':train_ucsf_mci,
         # 'train_ucsf_hiv':train_ucsf_hiv, 'train_ucsf_mnd':train_ucsf_mnd,
         #
         # 'test_ucsf_ctrl':test_ucsf_ctrl, 'test_ucsf_mci':test_ucsf_mci,
