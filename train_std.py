@@ -70,12 +70,14 @@ parser.add_argument('--fc_dropout', type=float, default=0.1,
                     help='dropout for fc')
 parser.add_argument('--wd', type=float, default=0.01,
                     help='weight decay for adam')
+parser.add_argument('--lamb', type=float, default=0.5,
+                    help='multiplier for pair loss')
 parser.add_argument('--dyn_drop',action='store_true', default=False,
                     help='apply dynamic drop out ')
-parser.add_argument('--alpha', type=float, nargs='+', default=0.5,
-                    help='alpha for focal loss')
-parser.add_argument('--gamma', type=float, default=2.0,
-                    help='gamma for focal loss')
+# parser.add_argument('--alpha', type=float, nargs='+', default=0.5,
+#                     help='alpha for focal loss')
+# parser.add_argument('--gamma', type=float, default=2.0,
+#                     help='gamma for focal loss')
 parser.add_argument('--seed', type=int, default=1,
                     help='seed')
 args = parser.parse_args()
@@ -91,21 +93,22 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 if args.dyn_drop:
 
-    args.name = args.name + '_dyn_drop_'+ '_fearch_' + args.fe_arch + '_bz_' + str(args.batch_size) +'_epoch_' + str(args.epochs) + '_lr_' + str(args.lr) + '_wd_' + str(args.wd) + '_alpha_' + str(args.alpha)+'_seed_'+str(seed)
+    args.name = args.name + '_dyn_drop_'+ '_fearch_' + args.fe_arch + '_bz_' + str(args.batch_size) +'_epoch_' + str(args.epochs) + '_lr_' + str(args.lr) + '_wd_' + str(args.wd) + '_lamb_' + str(args.lamb) + '_seed_'+str(seed)
 else:
-    args.name = args.name + '_fearch_' + args.fe_arch + '_bz_' + str(args.batch_size) + '_epoch_' + str(args.epochs) + '_lr_' + str(args.lr) + '_do_'+str(args.dropout) +'_fcdo_' + str(args.fc_dropout) + '_wd_' + str(args.wd) + '_alpha_'+str(args.alpha)+'_seed_'+str(seed)
+    args.name = args.name + '_fearch_' + args.fe_arch + '_bz_' + str(args.batch_size) + '_epoch_' + str(args.epochs) + '_lr_' + str(args.lr) + '_do_'+str(args.dropout) +'_fcdo_' + str(args.fc_dropout) + '_wd_' + '_lamb_' + str(args.lamb) + str(args.wd) + '_seed_'+str(seed)
 
 #UNCOMMENT TO LOG TRAINING SETTINGS
 
-# wandb.init(project="paired", entity="jmanasse", config = {
-#   "learning_rate": args.lr,
-#   "epochs": args.epochs,
-#   "batch_size": args.batch_size,
-#   "fc dropout": args.fc_dropout,
-#   'dropout': args.dropout,
-#   "weight decay": args.wd,
-#   'loss type': 'pair loss'
-# })
+wandb.init(project="paired", entity="jmanasse", config = {
+  "learning_rate": args.lr,
+  "epochs": args.epochs,
+  "batch_size": args.batch_size,
+  "fc dropout": args.fc_dropout,
+  'dropout': args.dropout,
+  "weight decay": args.wd,
+  "loss multiplier": args.lamb,
+  'loss type': 'pair loss'
+})
 
 print("device:",device)
 
@@ -124,7 +127,7 @@ npz = {}
 for i, j in zip(ucsf_metadata['PIDN'], ucsf_metadata['NPZ']):
     npz[i] = j
 
-def pair_loss(emb_t1, emb_t2, delta_npz, pred_1, pred_2, label_1, label_2, lamb, tau):
+def pair_loss(emb_t1, emb_t2, delta_npz, pred_cd, pred_hiv, labels_cd, labels_hiv, lamb, tau):
     """
     emb_t1 (128-tensor): embedding for first image in pair
     emb_t2 (128-tensor): embedding for second image in pair
@@ -135,17 +138,18 @@ def pair_loss(emb_t1, emb_t2, delta_npz, pred_1, pred_2, label_1, label_2, lamb,
     tau: current value of disentanglement vector
     """
     bce = nn.BCEWithLogitsLoss()
-    # pred_1 = torch.tensor(pred_1)
-    # pred_2 = torch.tensor(pred_2)
-    # label_1 = torch.tensor(label_1)
-    # label_2 = torch.tensor(label_2)
-    # print(pred_1,pred_2)
-    # print(label_1, label_2)
-    bce_loss = bce(pred_1, label_1) + bce(pred_2, label_2)
+    # print(pred_cd,pred_hiv)
+    # print(labels_cd, labels_hiv)
+    bce_loss_cd = bce(pred_cd,labels_cd)
+    bce_loss_hiv = bce(pred_hiv,labels_hiv)
+    bce_loss = bce_loss_cd + bce_loss_hiv
+
     proj_e1_len = torch.norm((torch.dot(emb_t1, tau) / torch.dot(tau, tau)) * tau)
     proj_e2_len = torch.norm((torch.dot(emb_t2, tau) / torch.dot(tau, tau)) * tau)
     emb_len_diff = torch.abs(proj_e2_len - proj_e1_len)
     disentangle_loss = torch.abs(emb_len_diff - delta_npz)
+    # print(bce_loss.get_device())
+    # print(disentangle_loss.get_device())
     return bce_loss + lamb*disentangle_loss
 
 @torch.no_grad()
@@ -258,16 +262,18 @@ def test(feature_extractor, classifier_ucsf, loader, lamb=0.5, fold=None, epoch=
             params = feature_extractor.state_dict()
             tau = params['feature_extractor.tau']
 
-            paired_loss = pair_loss(torch.squeeze(feature_1), torch.squeeze(feature_2), delta_npz, pred_1, pred_2, labels[0].to(device).float(), labels[1].to(device).float(), lamb, tau).to(device)
+            pred_cd = torch.tensor([pred[0][0], pred[1][0]])
+            pred_hiv = torch.tensor([pred[0][1], pred[1][1]])
+            labels_cd = torch.tensor([labels[0][0], labels[1][0]])
+            labels_hiv = torch.tensor([labels[0][1], labels[1][1]])
+
+            paired_loss = pair_loss(torch.squeeze(feature_1), torch.squeeze(feature_2), delta_npz, pred_cd, pred_hiv, labels_cd, labels_hiv, lamb, tau).to(device)
 
             paired_loss_avg += paired_loss.item()
 
             # BELOW (TO REST OF FUNC) IS just metrics essentially
 
-            pred_cd = torch.tensor([pred[0][0], pred[1][0]])
-            pred_hiv = torch.tensor([pred[0][1], pred[1][1]])
-            labels_cd = torch.tensor([labels[0][0], labels[1][0]])
-            labels_hiv = torch.tensor([labels[0][1], labels[1][1]])
+
 
             pred_cd[pred_cd>0]=1
             pred_cd[pred_cd<0]=0
@@ -292,7 +298,6 @@ def test(feature_extractor, classifier_ucsf, loader, lamb=0.5, fold=None, epoch=
 
 
             # pred_cur = copy.deepcopy(pred)
-
 
         # remove duplicate test data
         # if i == num_batches - 1:
@@ -343,7 +348,7 @@ def test(feature_extractor, classifier_ucsf, loader, lamb=0.5, fold=None, epoch=
                 actual_pred = 2
             elif ucsf_pred_cd[j] == 1 and ucsf_pred_hiv[j] == 1 :
                 actual_pred = 3
-            # print(actual_pred)
+            # print(actual_pred, ucsf_actual_labels[j])
             if ucsf_actual_labels[j] ==  0 :
                 total_0_ucsf += 1
                 if actual_pred == 0   :
@@ -491,13 +496,29 @@ def get_cf_kernel(loader):
     return cf_kernel
 
 def get_cf_kernel_batch(data):
-    all_images, all_labels, all_actual_labels, all_datasets, all_ids, all_ages, all_genders = data
+    #flatten pairs
+    all_images, all_labels, all_actual_labels, all_datasets, all_ids, all_ages, all_genders = ([] for _ in range(7))
+
+    for j in range(len(data)):
+
+        #retrieve pair
+        pair = [[data[k][0][j],data[k][1][j]] for k in range(7)]
+        images, labels, actual_labels, datasets, ids, ages, genders = pair #now single tuples of size 2
+        all_images += images
+        all_labels += labels
+        all_actual_labels += actual_labels
+        all_datasets += datasets
+        all_ids += ids
+        all_ages += ages
+        all_genders += genders
+
     label_hiv = []
     label_cd = []
     dataset_ucsf = []
     ages = []
     gender_m = []
-    N = all_images.shape[0]
+    N = len(all_images)
+    # N = all_images.shape[0]
     for j in range(0,N):
         labels=all_labels[j]
         actual_labels=all_actual_labels[j]
@@ -582,12 +603,12 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,final_t
             feature_extractor.zero_grad()
             classifier_ucsf.zero_grad()
 
-            # data = (images, labels, actual_labels, datasets, ids, ages, genders) #now collection of size 2 tuples
-            # cfs = get_cf_kernel_batch(data)
-            #
-            # classifier_ucsf[2].cfs = cfs
-            # classifier_ucsf[5].cfs = cfs
-            # classifier_ucsf[7].cfs = cfs
+            data = (images, labels, actual_labels, datasets, ids, ages, genders) #now collection of size 2 tuples
+            cfs = get_cf_kernel_batch(data)
+
+            classifier_ucsf[2].cfs = cfs
+            classifier_ucsf[5].cfs = cfs
+            classifier_ucsf[7].cfs = cfs
 
             # datasets = np.array(datasets)
             # print(data[0])
@@ -600,7 +621,7 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,final_t
                 #retrieve pair
                 pair = [[data[k][0][j],data[k][1][j]] for k in range(7)]
                 images, labels, actual_labels, datasets, ids, ages, genders = pair #now single tuples of size 2
-
+                print(labels, actual_labels, datasets, ids, ages, genders)
                 #forward pass
                 # features = feature_extractor(images)
                 feature_1, feature_2 = feature_extractor(images[0][None, ...].to(device).float()), feature_extractor(images[1][None, ...].to(device).float())
@@ -618,7 +639,12 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,final_t
                 params = feature_extractor.state_dict()
                 tau = params['feature_extractor.tau']
 
-                paired_loss = pair_loss(torch.squeeze(feature_1), torch.squeeze(feature_2), delta_npz, pred_1, pred_2, labels[0].to(device).float(), labels[1].to(device).float(), lamb, tau).to(device)
+                pred_cd1 = torch.tensor([pred[0][0], pred[1][0]])
+                pred_hiv1 = torch.tensor([pred[0][1], pred[1][1]])
+                labels_cd = torch.tensor([labels[0][0], labels[1][0]])
+                labels_hiv = torch.tensor([labels[0][1], labels[1][1]])
+
+                paired_loss = pair_loss(torch.squeeze(feature_1), torch.squeeze(feature_2), delta_npz, pred_cd1, pred_hiv1, labels_cd, labels_hiv, lamb, tau).to(device)
                 #backwards pass
                 paired_loss.backward()
 
@@ -627,18 +653,16 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,final_t
 
                 fe_optimizer.step()
                 ucsf_optimizer.step()
+                new_params = feature_extractor.state_dict()
                 ##reset tau to train jointly
-                params['feature_extractor.tau'] = torch.ones(2048).float()
-                feature_extractor.load_state_dict(params)
+                new_params['feature_extractor.tau'] = torch.ones(2048).float()
+                feature_extractor.load_state_dict(new_params)
                 ###### End of "training" is here! ######
 
                 #Metrics
                 paired_loss_avg += paired_loss.item()
 
-                pred_cd1 = torch.tensor([pred[0][0], pred[1][0]])
-                pred_hiv1 = torch.tensor([pred[0][1], pred[1][1]])
-                labels_cd = torch.tensor([labels[0][0], labels[1][0]])
-                labels_hiv = torch.tensor([labels[0][1], labels[1][1]])
+
 
                 pred_cd = pred_cd1.clone()
                 pred_cd[pred_cd>0]=1
@@ -663,7 +687,7 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,final_t
                 loss='%.6f' % (paired_loss_avg / (i + 1)),
                 acc='%.2f' % overall_accuracy)
 
-        test_acc, test_ploss,test_accuracy_class, test_accuracy_dataset = test(feature_extractor, classifier_ucsf, test_loader, lamb=lamb, fold =fold, epoch = epoch)
+        test_acc, test_ploss,test_accuracy_class, test_accuracy_dataset = test(feature_extractor, classifier_ucsf, test_loader, lamb=args.lamb, fold =fold, epoch = epoch)
 
         test_ucsf_ctrl = test_accuracy_class['ucsf']['CTRL']
         test_ucsf_mci = test_accuracy_class['ucsf']['MCI']
@@ -678,7 +702,7 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,final_t
 
         # this training accuracy has augmentation in it!!!!!
         # some images are sampled more than once!!!!
-        train_acc, train_ploss,train_accuracy_class, train_accuracy_dataset = test(feature_extractor, classifier_ucsf, train_loader, lamb=lamb, fold =fold, epoch = epoch, train =True)
+        train_acc, train_ploss,train_accuracy_class, train_accuracy_dataset = test(feature_extractor, classifier_ucsf, train_loader, lamb=args.lamb, fold =fold, epoch = epoch, train =True)
 
         train_ucsf_ctrl = train_accuracy_class['ucsf']['CTRL']
         train_ucsf_mci = train_accuracy_class['ucsf']['MCI']
@@ -709,16 +733,17 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,final_t
         # csv_logger.writerow(row)
 
         #UNCOMMENT TO LOG TRAINING STATS TO WANDB
-        # wandb.log({ "train ploss": round((paired_loss_avg / (i + 1)),3), 'test_ploss': round(test_ploss,3), 'train_acc': round(overall_accuracy,3), 'test_acc': test_acc,'train_ucsf_ctrl':train_ucsf_ctrl, 'train_ucsf_mci':train_ucsf_mci,
-        # 'train_ucsf_hiv':train_ucsf_hiv, 'train_ucsf_mnd':train_ucsf_mnd,
-        #
-        # 'test_ucsf_ctrl':test_ucsf_ctrl, 'test_ucsf_mci':test_ucsf_mci,
-        # 'test_ucsf_hiv':test_ucsf_hiv, 'test_ucsf_mnd':test_ucsf_mnd,
+        wandb.log({ "train ploss": round((paired_loss_avg / (i + 1)),3), 'test_ploss': round(test_ploss,3), 'train_acc': round(overall_accuracy,3), 'test_acc': test_acc,'train_ucsf_ctrl':train_ucsf_ctrl, 'train_ucsf_mci':train_ucsf_mci,
+        'train_ucsf_hiv':train_ucsf_hiv, 'train_ucsf_mnd':train_ucsf_mnd,
+
+        'test_ucsf_ctrl':test_ucsf_ctrl, 'test_ucsf_mci':test_ucsf_mci,
+        'test_ucsf_hiv':test_ucsf_hiv, 'test_ucsf_mnd':test_ucsf_mnd
         # 'train_fpr_hiv': np.mean(train_roc_hiv[0]), 'train_fpr_cd': np.mean(train_roc_cd[0]),'train_tpr_hiv': np.mean(train_roc_hiv[1]),'train_tpr_cd': np.mean(train_roc_cd[1]),
-        # 'test_fpr_cd': np.mean(test_roc_cd[0]), 'test_fpr_hiv': np.mean(test_roc_hiv[0]),'test_tpr_cd': np.mean(test_roc_cd[1]),'test_tpr_hiv': np.mean(test_roc_hiv[1])})
-        #
-        # wandb.watch(feature_extractor)
-        # wandb.watch(classifier_ucsf)
+        # 'test_fpr_cd': np.mean(test_roc_cd[0]), 'test_fpr_hiv': np.mean(test_roc_hiv[0]),'test_tpr_cd': np.mean(test_roc_cd[1]),'test_tpr_hiv': np.mean(test_roc_hiv[1])
+        })
+
+        wandb.watch(feature_extractor)
+        wandb.watch(classifier_ucsf)
 
 
         if test_acc > best_accuracy:
@@ -911,7 +936,7 @@ if __name__ == '__main__':
         best_epoch_list[fold] = best_epoch
 
 
-        test_acc, test_loss,test_accuracy_class, test_accuracy_dataset, test_distance = test(feature_extractor, classifier_ucsf, ucsf_test_loader, lamb=0.5, fold = fold, train =True)
+        test_acc, test_loss,test_accuracy_class, test_accuracy_dataset, test_distance = test(feature_extractor, classifier_ucsf, ucsf_test_loader, lamb=args.lamb, fold = fold, train =True)
         acc_each_class_list.append( test_accuracy_class)
         # acc_each_dataset_list.append( test_accuracy_dataset)
         row = {'epoch': 'fold', 'train_acc': str(fold)}
