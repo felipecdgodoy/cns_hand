@@ -604,11 +604,11 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,final_t
             classifier_ucsf.zero_grad()
 
             data = (images, labels, actual_labels, datasets, ids, ages, genders) #now collection of size 2 tuples
-            cfs = get_cf_kernel_batch(data)
+#             cfs = get_cf_kernel_batch(data)
 
-            classifier_ucsf[2].cfs = cfs
-            classifier_ucsf[5].cfs = cfs
-            classifier_ucsf[7].cfs = cfs
+#             classifier_ucsf[2].cfs = cfs
+#             classifier_ucsf[5].cfs = cfs
+#             classifier_ucsf[7].cfs = cfs
 
             # datasets = np.array(datasets)
             # print(data[0])
