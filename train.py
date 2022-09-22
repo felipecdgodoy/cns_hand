@@ -114,7 +114,7 @@ print("device:",device)
 
 
 #extract npz scores
-ucsf_metadata =  pd.read_csv('/home/users/jmanasse/all_ucsf_metadata.csv')
+ucsf_metadata =  pd.read_csv('all_ucsf_metadata.csv')
 ucsf_metadata = ucsf_metadata[ucsf_metadata['NPZ'].notna()]
 #remove 99s (non-entries)
 
