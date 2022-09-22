@@ -697,8 +697,8 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,final_t
             with torch.autograd.set_detect_anomaly(True):
                 # paired_loss_sum.backward()
 
-                # torch.nn.utils.clip_grad_norm_(feature_extractor.parameters(), 1)
-                # torch.nn.utils.clip_grad_norm_(classifier_ucsf.parameters(), 1)
+                torch.nn.utils.clip_grad_norm_(feature_extractor.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(classifier_ucsf.parameters(), 1.0)
 
                 fe_optimizer.step()
                 ucsf_optimizer.step()
