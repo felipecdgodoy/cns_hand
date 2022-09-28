@@ -69,7 +69,7 @@ class FeatureExtractorPaired(nn.Module):
         self.conv4_b = nn.Sequential(
                         nn.Conv3d(2*inter_num_ch, 2*inter_num_ch, kernel_size=3, padding=1),
         )
-     def forward(self, x):
+    def forward(self, x):
         out1 =  self.conv1(x)
         out1 =  self.conv1_b(out1)
         out1 += self.conv_1s_1(x)
