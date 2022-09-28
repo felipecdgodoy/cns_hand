@@ -896,7 +896,7 @@ if __name__ == '__main__':
             train_not.pop()
         test_npz = [x for x in ucsf_test_data if float(x[4]) in npz]
         if len(test_npz) % 2 != 0:
-            train_npz.pop()
+            test_npz.pop()
         test_not = [x for x in ucsf_test_data if float(x[4]) not in npz]
         if len(test_not) % 2 != 0:
             test_not.pop()
@@ -968,7 +968,7 @@ if __name__ == '__main__':
         best_epoch_list[fold] = best_epoch
 
 
-        test_acc, test_loss,test_accuracy_class, test_accuracy_dataset, test_distance = test(feature_extractor, classifier_ucsf, ucsf_test_loader, lamb=args.lamb, fold = fold, train =True)
+        test_acc, test_loss,test_accuracy_class, test_accuracy_dataset = test(feature_extractor, classifier_ucsf, ucsf_test_loader, lamb=args.lamb, fold = fold, train =True)
         acc_each_class_list.append( test_accuracy_class)
         # acc_each_dataset_list.append( test_accuracy_dataset)
         row = {'epoch': 'fold', 'train_acc': str(fold)}
