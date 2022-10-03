@@ -843,7 +843,7 @@ if __name__ == '__main__':
     best_model_dict = {}
 
     acc_each_class_list = []
-    #acc_each_dataset_list = []
+    acc_each_dataset_list = []
     for fold in range(0,5):
 
         row = {'epoch': 'fold', 'train_acc': str(fold)}
