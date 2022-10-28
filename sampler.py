@@ -154,7 +154,7 @@ class MixedSampler(torch.utils.data.sampler.Sampler):
     def __init__(self, dataset,  batch_size, num_batches = 27,status = None):
         self.status = status
         self.batch_size = batch_size
-        self.dataset = ['ucsf','lab']
+        self.dataset = ['ucsf', 'adni', 'lab']#,'adni']
         loader = DataLoader(dataset)
         labels_list = []
         datasets_list = []
@@ -223,7 +223,7 @@ class MixedSampler(torch.utils.data.sampler.Sampler):
         all_index[5] = lab_2
         all_index[6] = adni_0
         all_index[7] = adni_1
-        for i in range(0,8):
+        for i in range(0,8):#(0,6):
             np.random.shuffle(all_index[i])
         all_index_copy = copy.deepcopy(all_index)
         indices = []
@@ -270,3 +270,99 @@ class MixedSampler(torch.utils.data.sampler.Sampler):
                     np.random.shuffle(all_index[j])
 
                     output.append(all_index[j].pop(0))
+
+class PairedSampler(torch.utils.data.sampler.Sampler):
+    """
+    From Sampler docs
+    Every Sampler subclass has to provide an __iter__ method, providing a way
+    to iterate over indices of dataset elements, and a __len__ method that
+    returns the length of the returned iterators.
+
+    BatchSampler - from a MNIST-like dataset, samples n_classes and within these classes samples n_samples.
+    Returns batches of size n_classes * n_samples
+
+    Only return UCSF data
+    """
+
+    def __init__(self, dataset,  batch_size, num_batches = 27,status = None):
+        self.status = status
+        self.batch_size = batch_size
+        loader = DataLoader(dataset)
+        labels_list = []
+        #only retrieve sample labels from UCSF dataset
+        for images, labels, actual_labels, datasets,ids,ages,genders in loader:
+            if datasets[0] == 'ucsf':
+                labels_list.append(actual_labels)
+        self.num_batches = num_batches #math.ceil( len(labels_list)/batch_size)
+
+        ucsf_labels_list=np.array(labels_list)
+        #dict=label:indices where labels occurs
+        self.ucsf_label_to_indices = {label: np.where(ucsf_labels_list == label)[0]
+                                 for label in [0,1,2,3]}
+
+        #just a list of all indices
+        self.all_ucsf_index = []
+        for l in [0,1,2,3]:
+            self.all_ucsf_index.extend(self.ucsf_label_to_indices[l])
+
+
+    def __iter__(self):
+
+        #retrieve indices with each label
+        ucsf_0 = list(np.copy(self.ucsf_label_to_indices[0]))
+        ucsf_1 = list(np.copy(self.ucsf_label_to_indices[1]))
+        ucsf_2 = list(np.copy(self.ucsf_label_to_indices[2]))
+        ucsf_3 = list(np.copy(self.ucsf_label_to_indices[3]))
+
+        #dict=label:indices where labels occurs/same as ucsf_label_to_indices
+        all_index = {}
+        all_index[0] = ucsf_0
+        all_index[1] = ucsf_1
+        all_index[2] = ucsf_2
+        all_index[3] = ucsf_3
+
+        #shuffle indices for each label
+        for i in range(0,4):
+            np.random.shuffle(all_index[i])
+
+        all_index_copy = copy.deepcopy(all_index)
+
+        indices = []
+        output = {}
+
+        #make each batch (a list of indices drawn with replacement per label)
+        for i in range(0,self.num_batches):
+            output[i]=[]
+            self.get_index(all_index, output[i],all_index_copy)
+
+        #'flatten' batch dictionary into list
+        for i in range(0,self.num_batches):
+            indices.extend(output[i])
+
+
+        #return iterator yielding pairs (0,0) --> (1,1) --> (2,2) --> (3,3) --> (0,0) --> ...
+        return iter(indices)
+
+    def __len__(self):
+        return 2 #because pair
+
+
+    def get_index(self, all_index, output, all_index_copy):
+
+        class_size = 10 #this is a magic number and I'm not sure how it was determined :(
+        for i in range(0,class_size):
+
+            #for each label
+            for j in range(0,4):
+                #while more than one index is yet unassigned,
+                #remove the first two elements remaining and add to to the batch
+                if len(all_index[j])>1:
+                    pair = (all_index[j].pop(0), all_index[j].pop(0))
+                    output.append(pair)
+                #otherwise, 'refresh' list and shuffle again
+                else:
+                    all_index[j] = list(np.copy(all_index_copy[j]))
+                    np.random.shuffle(all_index[j])
+
+                    pair = (all_index[j].pop(0), all_index[j].pop(0))
+                    output.append(pair)
