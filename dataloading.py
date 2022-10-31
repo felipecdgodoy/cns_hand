@@ -120,12 +120,18 @@ class MRI_Dataset(Dataset):
 
     def __getitem__(self, idx):
         if self.transform != None:
+           
             if type(idx) != int:
+
                image = (self.transform(self.data[idx[0]]),self.transform(self.data[idx[1]])) 
+  
             else:            
                image = self.transform(self.data[idx])
         else:
-            image = self.data[idx]
+            if type(idx) != int:
+               image = (self.data[idx[0]],self.data[idx[1]])
+            else:
+               image = self.data[idx]
         
         
         if type(idx) != int:
