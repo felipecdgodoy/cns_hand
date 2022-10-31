@@ -791,7 +791,7 @@ if __name__ == '__main__':
         batch_num_wo_replacement = len(test_data)//args.batch_size + 1
         print(batch_num_wo_replacement)
         test_loader = DataLoader(dataset=test_data ,
-                                      batch_size=16,
+                                      batch_size=args.batch_size,
                                       sampler=PairedSampler(dataset=test_data,  batch_size=args.batch_size,num_batches=batch_num_wo_replacement),# to include all test images
                                       shuffle=False,
                                       pin_memory=True,
