@@ -30,33 +30,33 @@ class MRI_Dataset(Dataset):
 
         print('fold:',fold)
         if stage == 'original_train':
-            pickle_name = '/scratch/users/fgodoy/threehead/original_train_data_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/original_train_data_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 original_train_data = pickle.load(handle)
 
-            pickle_name = '/scratch/users/fgodoy/threehead/original_train_label_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/original_train_label_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 original_train_label = pickle.load(handle)
 
-            pickle_name = '/scratch/users/fgodoy/threehead/original_train_actual_label_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/original_train_actual_label_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 original_actual_train_dx = pickle.load(handle)
 
 
 
-            pickle_name = '/scratch/users/fgodoy/threehead/original_train_dataset_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/original_train_dataset_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 original_train_dataset = pickle.load(handle)
 
-            pickle_name = '/scratch/users/fgodoy/threehead/train_id_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/train_id_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 train_id = pickle.load(handle)
 
-            pickle_name = '/scratch/users/fgodoy/threehead/train_age_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/train_age_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 train_ages = pickle.load(handle)
 
-            pickle_name = '/scratch/users/fgodoy/threehead/train_gender_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/train_gender_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 train_genders = pickle.load(handle)
 
@@ -65,8 +65,6 @@ class MRI_Dataset(Dataset):
             self.dataset = original_train_dataset
             print('ucsf:'+ str(sum([1 for d in self.dataset if d == 'ucsf'])))
             self.actual_dx = original_actual_train_dx
-            ls = list(self.actual_dx)
-            print(ls.count(0),ls.count(1),ls.count(2),ls.count(3))
             self.ids = train_id
             self.ages = train_ages
             self.genders = train_genders
@@ -76,31 +74,31 @@ class MRI_Dataset(Dataset):
 
 
         elif stage == 'original_test':
-            pickle_name = '/scratch/users/fgodoy/threehead/original_test_data_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/original_test_data_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 test_data = pickle.load(handle)
 
-            pickle_name = '/scratch/users/fgodoy/threehead/original_test_label_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/original_test_label_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 test_dx = pickle.load(handle)
 
-            pickle_name = '/scratch/users/fgodoy/threehead/original_test_actual_label_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/original_test_actual_label_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 actual_test_dx = pickle.load(handle)
 
-            pickle_name = '/scratch/users/fgodoy/threehead/original_test_dataset_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/original_test_dataset_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 test_dataset = pickle.load(handle)
 
-            pickle_name = '/scratch/users/fgodoy/threehead/test_id_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/test_id_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 test_id = pickle.load(handle)
 
-            pickle_name = '/scratch/users/fgodoy/threehead/test_age_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/test_age_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 test_ages = pickle.load(handle)
 
-            pickle_name = '/scratch/users/fgodoy/threehead/test_gender_'+str(fold)+'.pickle'
+            pickle_name = '/scratch/users/jmanasse/threehead/test_gender_'+str(fold)+'.pickle'
             with open(pickle_name, 'rb') as handle:
                 test_genders = pickle.load(handle)
 
@@ -109,11 +107,10 @@ class MRI_Dataset(Dataset):
             self.dataset = test_dataset
             print('ucsf:' + str(sum([1 for d in self.dataset if d == 'ucsf'])))
             self.actual_dx = actual_test_dx
-            ls = list(self.actual_dx)
-            print(ls.count(0),ls.count(1),ls.count(2),ls.count(3))
             self.ids = test_id
             self.ages = test_ages
             self.genders = test_genders
+            #print(self.dx,self.actual_dx,self.ids,self.ages,self.genders)
             print('original_test num ', self.data.shape[0])
 
 
@@ -123,8 +120,15 @@ class MRI_Dataset(Dataset):
 
     def __getitem__(self, idx):
         if self.transform != None:
-            image = self.transform(self.data[idx])
+            if type(idx) != int:
+               image = (self.transform(self.data[idx[0]]),self.transform(self.data[idx[1]])) 
+            else:            
+               image = self.transform(self.data[idx])
         else:
             image = self.data[idx]
-
-        return image, self.dx[idx],self.actual_dx[idx],self.dataset[idx],self.ids[idx],self.ages[idx],self.genders[idx]
+        
+        
+        if type(idx) != int:
+           return image, (self.dx[idx[0]], self.dx[idx[1]]),(self.actual_dx[idx[0]],self.actual_dx[idx[1]]),(self.dataset[idx[0]],self.dataset[idx[1]]),(self.ids[idx[0]],self.ids[idx[1]]),(self.ages[idx[0]],self.ages[idx[1]]),(self.genders[idx[0]],self.genders[idx[1]])
+        else:
+           return image, self.dx[idx],self.actual_dx[idx],self.dataset[idx],self.ids[idx],self.ages[idx],self.genders[idx]
