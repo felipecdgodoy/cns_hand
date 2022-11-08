@@ -100,7 +100,7 @@ wandb.init(project="paired", entity="jmanasse", config = {
   "fc dropout": args.fc_dropout,
   'dropout': args.dropout,
   "weight decay": args.wd,
-  'loss type': 'xentropy_loss'
+  'loss type': 'xentropy_loss w/accumulation'
 })
 
 print("device:",device)
@@ -210,6 +210,8 @@ def test(feature_extractor, classifier_ucsf, loader,  ucsf_criterion_cd, ucsf_cr
     all_label_cd = []
     all_label_hiv = []
 
+    accum_iter = args.batch_size//2
+
 
     num_batches = 0
     for i, _ in enumerate(loader):
@@ -218,35 +220,11 @@ def test(feature_extractor, classifier_ucsf, loader,  ucsf_criterion_cd, ucsf_cr
     for i, batch in enumerate(loader):
         num_samples.append(len(batch[0][0]))
 
+    dataset_length = 115
+    l = 0
 
     for i,(images, labels,actual_labels,datasets,ids, ages, genders) in enumerate(loader):
-        # datasets = np.array(datasets)
-        # ids = np.array(ids)
-        # actual_labels = np.array(actual_labels)
-        # images = images.to(device).float()
-        # labels = labels.to(device).float()
-        #
-        # if i == num_batches - 1:
-        #     number_needed = int(args.batch_size) - len(images)
-        #     images0, labels0, actual_labels0, datasets0, ids0, ages0, genders0 = first_batch_data
-        #     images = torch.cat((images, images0[:number_needed,]),dim=0)
-        #     labels = torch.cat((labels, labels0[:number_needed,]),dim=0)
-        #     actual_labels = np.concatenate((actual_labels, actual_labels0[:number_needed,]),axis=0)
-        #     datasets = np.concatenate((datasets, datasets0[:number_needed]),axis=0)
-        #
-        #     ids = np.concatenate((ids, ids0[:number_needed]),axis=0)
-        #     ages = np.concatenate((ages, ages0[:number_needed]),axis=0)
-        #     genders = np.concatenate((genders, genders0[:number_needed]),axis=0)
-        #
-        # data = (images, labels, actual_labels, datasets, ids, ages, genders)
 
-        # cfs = get_cf_kernel_batch(data)
-        # classifier_ucsf[2].cfs = cfs
-        # classifier_ucsf[5].cfs = cfs
-        # classifier_ucsf[7].cfs = cfs
-        #
-        # if i==0:
-        #     first_batch_data = copy.deepcopy(data)
 
         pred_cd= []
         pred_hiv = []
@@ -255,6 +233,11 @@ def test(feature_extractor, classifier_ucsf, loader,  ucsf_criterion_cd, ucsf_cr
         actual = []
 
         for j in range(num_samples[i]//2):
+            #remove duplicate dataset
+            if l > dataset_length and not train:
+                break
+
+            l += 2
 
             feature1 = feature_extractor(images[0][j].to(device).float())
             feature2 = feature_extractor(images[1][j].to(device).float())
@@ -283,9 +266,6 @@ def test(feature_extractor, classifier_ucsf, loader,  ucsf_criterion_cd, ucsf_cr
             # xentropy_loss = (xentropy_loss_cd + xentropy_loss_hiv).mean()
 
             xentropy_loss_avg += xentropy_loss.item()
-            # pred_cur = copy.deepcopy(pred)
-            # pred_cd_copy = copy.deepcopy(pred_cd)
-            # pred_hiv_copy = copy.deepcopy(pred_hiv)
 
             pred_cd1[pred_cd1>0]=1
             pred_cd1[pred_cd1<0]=0
@@ -298,6 +278,7 @@ def test(feature_extractor, classifier_ucsf, loader,  ucsf_criterion_cd, ucsf_cr
             truth = torch.tensor([True]*len(a)).cuda()
             truth = torch.unsqueeze(truth,1)
             correct += ((a==truth)&(b==truth)).sum().item()
+
             total += 2#images.size(0)
 
             pred_cd += pred_cd1
@@ -306,46 +287,14 @@ def test(feature_extractor, classifier_ucsf, loader,  ucsf_criterion_cd, ucsf_cr
             hiv_labels += labels_hiv
             actual += [actual_labels[0][j],actual_labels[1][j]]
 
-        # remove duplicate test data
-        # if i == num_batches - 1:
-        #     number_actual = int(args.batch_size) - number_needed
-        #     pred_cur = pred_cur[:number_actual,]
-        #     pred_cd = pred_cd[:number_actual,]
-        #     pred_hiv = pred_hiv[:number_actual,]
-        #     labels_cd = labels_cd[:number_actual,]
-        #     labels_hiv = labels_hiv[:number_actual,]
-        #     datasets = datasets[:number_actual,]
-        #     actual_labels = actual_labels[:number_actual,]
-        #     ids= ids[:number_actual,]
-        #     ages = ages[:number_actual,]
-        #     genders = genders[:number_actual,]
-        #
-        #     pred_cd_copy = pred_cd_copy[:number_actual,]
-        #     pred_hiv_copy = pred_hiv_copy[:number_actual,]
-        #     feature = feature[:number_actual,]
-
-
-        # feature_list.append(feature.cpu())
-        # all_datasets = np.append(all_datasets,datasets)
-        # all_ids = np.append(all_ids, ids)
-        # all_preds.extend(pred_cur.detach().cpu().numpy())
-        # all_genders.extend(genders)
-        # all_ages.extend(ages)
-        # all_label_cd.extend(labels_cd.squeeze().detach().cpu().numpy())
-        # all_label_hiv.extend(labels_hiv.squeeze().detach().cpu().numpy())
 
         # ucsf
         ucsf_pred_cd = pred_cd
         ucsf_pred_hiv = pred_hiv
-        # ucsf_pred_cd_copy = pred_cd_copy[datasets=='ucsf']
-        # ucsf_pred_hiv_copy = pred_hiv_copy[datasets=='ucsf']
         ucsf_labels_cd = cd_labels
         ucsf_labels_hiv = hiv_labels
         ucsf_actual_labels = actual
-        # ucsf_ids = ids[datasets=='ucsf']
 
-        # roc_hiv = roc_curve(np.array(ucsf_labels_hiv.cpu()), np.array(ucsf_pred_hiv.cpu()))
-        # roc_cd = roc_curve(np.array(ucsf_labels_cd.cpu()), np.array(ucsf_pred_cd.cpu()))
         for j in range(0,len(ucsf_pred_cd)):
             total_ucsf += 1
             # if train == False:
@@ -391,6 +340,7 @@ def test(feature_extractor, classifier_ucsf, loader,  ucsf_criterion_cd, ucsf_cr
 
     accuracy_dataset['ucsf'] = round(accuracy_dataset['ucsf'] / total_ucsf,3)
     print(accuracy_class, total_ucsf)
+    # print(total_0_ucsf,total_1_ucsf,total_2_ucsf,total_3_ucsf)
     overall_accuracy = (correct) / (total)
     overall_accuracy = round(overall_accuracy,3)
 
@@ -455,37 +405,38 @@ def get_cf_kernel(loader):
     gender_m = []
 
     for i,(all_images, all_labels, all_actual_labels, all_datasets, all_ids, all_ages, all_genders) in enumerate(loader):
-        for j in range(0,len(all_images)):
-            labels=all_labels[j]
-            actual_labels=all_actual_labels[j]
-            datasets =  all_datasets[j]
-
-            if actual_labels == 0:
-                label_hiv.append(0)
-                label_cd.append(0)
-            elif actual_labels == 1: #cd
-                label_hiv.append(0)
-                label_cd.append(1)
-            elif actual_labels == 2: #hiv
-                label_hiv.append(1)
-                label_cd.append(0)
-            elif actual_labels == 3: #hand
-                label_hiv.append(1)
-                label_cd.append(1)
-
-            if datasets=='ucsf':
-
-                dataset_ucsf.append(1)
-
-            ages.append(all_ages[j])
-            cur_gender = all_genders[j]
+        for j in range(all_actual_labels[0].size(dim=0)):
+            ages.append(all_ages[0][j])
+            ages.append(all_ages[1][j])
+            cur_gender = all_genders[0][j]
             if cur_gender == 0:
                 gender_m.append(1)
             elif cur_gender == 1:
                 gender_m.append(0)
+            cur_gender = all_genders[1][j]
+            if cur_gender == 0:
+                gender_m.append(1)
+            elif cur_gender == 1:
+                gender_m.append(0)
+            actual_labels=[all_actual_labels[0][j],all_actual_labels[1][j]]
+            for actual_label in actual_labels:
+                if actual_label == 0:
+                    label_hiv.append(0)
+                    label_cd.append(0)
+                elif actual_label == 1: #cd
+                    label_hiv.append(0)
+                    label_cd.append(1)
+                elif actual_label == 2: #hiv
+                    label_hiv.append(1)
+                    label_cd.append(0)
+                elif actual_label == 3: #hand
+                    label_hiv.append(1)
+                    label_cd.append(1)
 
-    N = len(dataset_ucsf)
-    print(N)
+            dataset_ucsf.append(1)
+
+    N = len(dataset_ucsf*2)
+    # print(N
     X_shuffled = np.zeros((N,5))
     X_shuffled[:,0] = label_hiv
     X_shuffled[:,1] = label_cd
@@ -586,14 +537,21 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,  ucsf_
         ucsf_total = 0.
         total = 0.
         overall_accuracy = 0
+        # batch accumulation parameter
+        accum_iter = args.batch_size//2
 
+        progress_bar.set_description('Epoch ' + str(epoch))
         ###### "Training happens here! ######
         for i, (images, labels, actual_labels, datasets, ids, ages, genders) in enumerate(progress_bar):
 
 
             for j in range(num_samples[i]//2):
-                feature_extractor.zero_grad()
-                classifier_ucsf.zero_grad()
+
+                # cfs = get_cf_kernel_batch(data)
+                #
+                # classifier_ucsf[2].cfs = cfs
+                # classifier_ucsf[5].cfs = cfs
+                # classifier_ucsf[7].cfs = cfs
 
                 feature1 = feature_extractor(images[0][j].to(device).float())
                 feature2 = feature_extractor(images[1][j].to(device).float())
@@ -609,9 +567,11 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,  ucsf_
 
                 losscd = ucsf_criterion_cd(pred_cd1, labels_cd).to(device)
                 losshiv = ucsf_criterion_hiv(pred_hiv1, labels_hiv).to(device)
-                # print(losscd,losshiv)
                 loss = torch.cat((losscd.unsqueeze(0), losshiv.unsqueeze(0)))
                 xentropy_loss = torch.nansum(loss).mean()
+
+                # normalize loss to account for batch accumulation
+                xentropy_loss = xentropy_loss/accum_iter
                 # print(xentropy_loss)
                 # xentropy_loss = (losscd + losshiv).mean()
 
@@ -621,8 +581,11 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,  ucsf_
                 #
                 # torch.nn.utils.clip_grad_norm_(classifier_ucsf.parameters(), 1)
 
-                fe_optimizer.step()
-                ucsf_optimizer.step()
+                if ((j + 1) % accum_iter == 0) or (j + 1 == num_samples[i]//2):
+                    fe_optimizer.step()
+                    ucsf_optimizer.step()
+                    feature_extractor.zero_grad()
+                    classifier_ucsf.zero_grad()
 
             ###### End of "training" is here! ######
                 xentropy_loss_avg += xentropy_loss.item()
@@ -674,8 +637,8 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,  ucsf_
         train_accuracy_dataset['ucsf'] = round(ucsf_train_acc,3)
 
 
-        tqdm.write('train_acc: %.2f u_train_acc: %.2f' % (overall_accuracy, ucsf_train_acc))
-        tqdm.write('test_acc: %.2f u_test_acc: %.2f test_loss: %.2f' % (test_acc, ucsf_test_acc, test_loss))
+        tqdm.write('train_acc: %.2f u_train_acc: %.2f' % (overall_accuracy, ucsf_train_acc)) #OKAY
+        tqdm.write('test_acc: %.2f u_test_acc: %.2f test_loss: %.2f' % (test_acc, ucsf_test_acc, test_loss)) #CALCULATION ERROR on test_acc?
         row = {'epoch': epoch, 'train_acc': round(overall_accuracy,3), 'test_acc': test_acc, 'train_loss':round((xentropy_loss_avg / (i + 1)),3), 'test_loss': round(test_loss,3),
                'ucsf_train_acc': ucsf_train_acc,
 
@@ -692,8 +655,8 @@ def train(feature_extractor,  classifier_ucsf, train_loader, test_loader,  ucsf_
                'test_ucsf_hiv':test_ucsf_hiv, 'test_ucsf_mnd':test_ucsf_mnd}
 
         # UNCOMMENT TO LOG STATS TO WANDB
-        wandb.log({"train loss": round((xentropy_loss_avg / (i + 1)),3),"test loss":round(test_loss,3), 'train_acc': round(overall_accuracy,3), 'test_acc': test_acc,'train_ucsf_ctrl':train_ucsf_ctrl, 'train_ucsf_mci':train_ucsf_mci,
-
+        wandb.log({"train loss": round((xentropy_loss_avg / (i + 1)),3),"test loss":round(test_loss,3), 'train_acc': round(ucsf_train_acc,3), 'test_acc': ucsf_test_acc,'train_ucsf_ctrl':train_ucsf_ctrl, 'train_ucsf_mci':train_ucsf_mci,
+        'train_ucsf_hiv':train_ucsf_hiv, 'train_ucsf_mnd':train_ucsf_mnd,
         'test_ucsf_ctrl':test_ucsf_ctrl, 'test_ucsf_mci':test_ucsf_mci,
         'test_ucsf_hiv':test_ucsf_hiv, 'test_ucsf_mnd':test_ucsf_mnd})
 # Optional
@@ -797,14 +760,9 @@ if __name__ == '__main__':
                                       pin_memory=True,
                                       num_workers=3)
 
-        # final_test_loader = DataLoader(dataset=test_data ,
-        #                   batch_size=1,#args.batch_size,
-        #                   shuffle=False,
-        #                   pin_memory=True,
-        #                   num_workers=3)
         print("Begin training fold ",fold)
 
-        # cf_kernel  = get_cf_kernel(ucsf_train_loader)
+        # cf_kernel  = get_cf_kernel(train_loader)
         feature_extractor = fe(trainset_size = len(train_data), in_num_ch=1, img_size=(64, 64, 64), inter_num_ch=16,
                            fc_num_ch=16, kernel_size=3, conv_act='relu',
                            fe_arch=args.fe_arch, dropout=args.dropout,
@@ -815,13 +773,13 @@ if __name__ == '__main__':
                     nn.Linear(2048, 128),
                     nn.LeakyReLU(),
                      # nn.BatchNorm1d(128),
-                    # MetadataNorm(batch_size=args.batch_size, cf_kernel=cf_kernel, num_features = 128, trainset_size = len(ucsf_data)),
+                    # MetadataNorm(batch_size=1, cf_kernel=cf_kernel, num_features = 128, trainset_size = len(train_data)),
                     nn.Linear(128,16),
                     nn.LeakyReLU(),
                      # nn.BatchNorm1d(16),
-                   # MetadataNorm(batch_size=args.batch_size, cf_kernel=cf_kernel, num_features = 16, trainset_size = len(ucsf_data)),
+                   # MetadataNorm(batch_size=1, cf_kernel=cf_kernel, num_features = 16, trainset_size = len(train_data)),
                      nn.Linear(16, 2),
-                     # MetadataNorm(batch_size=args.batch_size, cf_kernel=cf_kernel, num_features = 2, trainset_size = len(ucsf_data)),
+                     # MetadataNorm(batch_size=1, cf_kernel=cf_kernel, num_features = 2, trainset_size = len(train_data)),
                 ).to(device)
 
         test_acc, test_accuracy_class, test_accuracy_dataset, best_accuracy, best_epoch, best_models = train(feature_extractor,  classifier_ucsf, train_loader,  test_loader, ucsf_criterion_cd,  ucsf_criterion_hiv, fold = fold)
