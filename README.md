@@ -1,6 +1,8 @@
-This repo already contains the necessary ```pickle``` files to run experiments, which handled all the pre-processing and patient matching. However, in case you need to run it again you can use ```python3 data_matching_builder.py```
+This repo doesn't by default contain all the necessary ```pickle``` files to run experiments (because of their size), which handle the feature pre-processing, patient matching, and image loading.
 
-A baseline experiment can be deployed through: ```sh run_baseline.sh```
+So before anything, run: ```python3 data_matching_builder.py```
+
+A baseline experiment can then be deployed through: ```sh run_baseline.sh```
 
 This command launches an experiment with no disentanglement component, meaning a purely BCE loss for the 4-way classification problem
 
