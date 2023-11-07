@@ -134,7 +134,7 @@ class Net(nn.Module):
         corr = 0
         for i in range(len(batch_preds)):
             try:
-                corr += np.any(np.round(batch_preds[i].detach().numpy()) == batch_labels[i].detach().numpy())
+                corr += np.all(np.round(batch_preds[i].detach().numpy()) == batch_labels[i].detach().numpy())
             except:
                 pass
         return corr
