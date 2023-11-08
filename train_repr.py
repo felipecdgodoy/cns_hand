@@ -124,11 +124,13 @@ class Net(nn.Module):
         disentangle_loss = (emb_len_diff - delta_sigma)[sigma_feature_present].square().sum()
         return bce_loss + lamb*disentangle_loss
 
-    def update_tau(self):
+    def update_tau(self, eps=1e-4):
         tau = self.encode(torch.ones((1, 1, self.dim, self.dim, self.dim), dtype=torch.float64))
-        unit_tau = tau / float(torch.norm(tau))
-        unit_tau = torch.reshape(unit_tau, (-1,))
-        return unit_tau.to(self.device)
+        tau = torch.reshape(tau, (-1,))
+        # avoid gradient vanishing
+        tau[tau > 0] += eps
+        tau[tau < 0] -= eps
+        return tau.to(self.device)
 
     def count_correct_batch(self, batch_preds, batch_labels):
         corr = 0
@@ -209,6 +211,7 @@ class Net(nn.Module):
                     total_loss += float(loss.data)
                 test_loss_vals.append(total_loss / imgs_seen)
                 test_acc.append(correct / imgs_seen)
+            print(f'    Epoch {e+1} Results -> avg train loss = {round(train_loss_vals[-1], 4)} | avg test loss = {round(test_loss_vals[-1], 4)} | train acc = {round(train_acc[-1], 4)} | test acc = {round(test_acc[-1], 4)}\n')
         print(f'    Final Epoch Results -> avg train loss = {round(train_loss_vals[-1], 4)} | avg test loss = {round(test_loss_vals[-1], 4)} | train acc = {round(train_acc[-1], 4)} | test acc = {round(test_acc[-1], 4)}\n')
         return fold_preds, test_acc, test_loss_vals
 
@@ -230,14 +233,14 @@ if __name__ == '__main__':
         model = Net(image_dim=64, tau_dim=2048).double()
         fold_preds, fold_accs, fold_losses = model.train_fold(image_pairs, label_pairs, sigma_pairs,
                                                               delta_sigma_pairs, model_args, fold=k)
-        with open(f'final_preds_fold_{k}.pickle', 'wb') as handle:
+        with open(f'final_preds_fold_{k}_{model_args}.pickle', 'wb') as handle:
             pk.dump(fold_preds, handle)
-        with open(f'final_acc_fold_{k}.pickle', 'wb') as handle:
+        with open(f'final_acc_fold_{k}_{model_args}.pickle', 'wb') as handle:
             pk.dump(fold_accs, handle)
-        with open(f'final_loss_fold_{k}.pickle', 'wb') as handle:
+        with open(f'final_loss_fold_{k}_{model_args}.pickle', 'wb') as handle:
             pk.dump(fold_losses, handle)
-        with open(f'ids_pidn_fold_{k}.pickle', 'wb') as handle:
+        with open(f'ids_pidn_fold_{k}_{model_args}.pickle', 'wb') as handle:
             idx = np.arange(len(image_pairs))
             fold_mask = (idx % num_folds == k)
             pk.dump(id_pairs[fold_mask], handle)
-        torch.save(model.state_dict(), os.path.join('', f'trained_model_fold_{k}.pth'))
+        torch.save(model.state_dict(), os.path.join('', f'trained_model_fold_{k}_{model_args}.pth'))
