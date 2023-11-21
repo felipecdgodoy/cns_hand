@@ -8,16 +8,14 @@ def get_CE_label(numeric_label):
     mapping = {0: np.array([0, 0]), 1: np.array([1, 0]), 2: np.array([0, 1]), 3: np.array([1, 1])}
     return mapping[numeric_label]
 
-with open('all_ucsf_593.pickle', 'rb') as f:
+with open('all_ucsf.pickle', 'rb') as f:
     ucsf = pk.load(f)
+
 ucsf = pd.DataFrame(ucsf, columns=['filename', 'label', 'dataset', 'all_dataset', 'id', 'age', 'gender', 'npz'])
 ucsf['id'] = ucsf['id'].astype(int)
-ucsf = ucsf.drop(columns={'age'}) # drop normalized age in favor of normal scale age from merging later
+ucsf.loc[np.abs(ucsf['npz']) > 4, 'npz'] = np.nan
 ucsf['label'] = ucsf['label'].apply(lambda x : get_CE_label(x))
 ucsf = ucsf.drop_duplicates(subset=['id'])
-
-ucsf = ucsf.merge(pd.read_csv('ucsf_npz_scores.csv')[['id', 'age']], on='id')
-
 ucsf = ucsf[['id', 'age', 'gender', 'npz', 'label', 'filename']]
 
 images = list()
@@ -30,6 +28,10 @@ for filename in ucsf['filename']:
     images.append(img_data)
 
 ucsf['image'] = images
+
+print(f'Matched patients: {len(ucsf)}')
+
+print(ucsf['npz'].describe())
 
 with open('matched_patients.pickle', 'wb') as handle:
     pk.dump(ucsf, handle)
