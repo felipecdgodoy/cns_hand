@@ -13,7 +13,8 @@ with open('all_ucsf.pickle', 'rb') as f:
 
 ucsf = pd.DataFrame(ucsf, columns=['filename', 'label', 'dataset', 'all_dataset', 'id', 'age', 'gender', 'npz'])
 ucsf['id'] = ucsf['id'].astype(int)
-ucsf.loc[np.abs(ucsf['npz']) > 4, 'npz'] = np.nan
+print(ucsf['npz'].describe())
+ucsf.loc[np.abs(ucsf['npz']) > 3.5, 'npz'] = np.nan
 ucsf['label'] = ucsf['label'].apply(lambda x : get_CE_label(x))
 ucsf = ucsf.drop_duplicates(subset=['id'])
 ucsf = ucsf[['id', 'age', 'gender', 'npz', 'label', 'filename']]
@@ -35,4 +36,5 @@ print(ucsf['npz'].describe())
 
 with open('matched_patients.pickle', 'wb') as handle:
     pk.dump(ucsf, handle)
+
 
