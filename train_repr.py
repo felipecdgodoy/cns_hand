@@ -22,6 +22,8 @@ parser.add_argument('--batch_size', type=int, default=16, help='input batch size
 parser.add_argument('--wd', type=float, default=0.0, help='weight decay')
 parser.add_argument('--seed', type=int, default=0, help='seed')
 parser.add_argument('--W', type=float, default=1.05, help='additional penalizing weighting for 1s over 0s, on top of ratio')
+parser.add_argument('--th_ci', type=float, default=0.5, help='classification threshold on the CI axis (x-axis)')
+parser.add_argument('--th_hiv', type=float, default=0.5, help='classification threshold on the HIV axis (y-axis)')
 parser.add_argument('--num_folds', type=int, default=5, help='number of folds to split data for CV')
 parser.add_argument('--verbose', type=int, default=0, help='defines how much info is logged to console during training')
 args = parser.parse_args()
@@ -44,16 +46,16 @@ torch.backends.cudnn.enabled = False # DO NOT REMOVE!
 
 class Net(nn.Module):
 
-    def __init__(self, image_dim=64, tau_dim=2048):
+    def __init__(self, image_dim=64, tau_dim=2048, thresh_tuple=(0.5, 0.5)):
         """ image_dim (int): value 'D' such that all images are a 3D-volume DxDxD"""
         """ tau_dim (int): number of dimensions to encode the tau-direction in"""
         super(Net, self).__init__()
         self.device = device
+        self.thresh = torch.tensor(thresh_tuple, device=self.device)
         self.dim = image_dim
-        self.split = 427
-        self.thresh = 0.5
         self.W = args.W
         self.ratio = None # ratio between label 0s and label 1s for the BCE loss weighting 
+        self.split = 427
         # Encoder from 3D-volume input to latent-space vector
         self.first_encode = nn.Sequential(
             nn.Sequential(nn.Conv3d(in_channels=1, out_channels=4, kernel_size=3, padding=1),
@@ -218,11 +220,10 @@ class Net(nn.Module):
 
     def train_fold(self, image_pairs, label_pairs, sigma_pairs, delta_sigma_pairs, model_args, fold, verbose):
         alpha, epochs, lamb, batch_size, wd, num_folds, _ = model_args
-        print(self.W, lamb)
         # train_mask = np.arange(len(image_pairs)) % num_folds != fold
         # valid_mask = np.arange(len(image_pairs)) % num_folds == (0 if fold != 0 else 1)
-        train_mask = np.arange(len(image_pairs)) % num_folds == 0 # all
-        valid_mask = np.arange(len(image_pairs)) % num_folds != 0 # none
+        train_mask = np.arange(len(image_pairs)) % num_folds == 0
+        valid_mask = np.arange(len(image_pairs)) % num_folds != 0
         train_mask[(self.split - 1) // 2:] = False
         valid_mask[(self.split - 1) // 2:] = False
         test_mask = np.arange((self.split + 1) // 2, len(image_pairs))
@@ -233,7 +234,7 @@ class Net(nn.Module):
         test_dl = DataLoader(image_pairs[test_mask], batch_size=batch_size, shuffle=False)
         train_loss_vals, train_acc, valid_loss_vals, valid_acc, test_loss_vals, test_acc = [], [], [], [], [], []
         opt = optim.Adam(self.parameters(), lr=alpha, weight_decay=wd)
-        fold_preds = dict()
+        fold_valid_preds, fold_test_preds = dict(), dict()
         for e in tqdm(range(epochs), desc=f'Fold {fold}'):
             total_loss, imgs_seen, correct = 0, 0, 0
             for i, batch in enumerate(train_dl):
@@ -269,6 +270,8 @@ class Net(nn.Module):
             train_loss_vals.append(total_loss / 1)
             train_acc.append(correct / imgs_seen)
             ## VALIDATION PORTION
+            fold_valid_preds[e] = []
+            fold_valid_labels = []
             if num_folds >= 2:
                 with torch.no_grad():
                     total_loss, imgs_seen, correct = 0, 0, 0
@@ -286,6 +289,8 @@ class Net(nn.Module):
                         l2 = valid_labels[i*eff_batch_size : (i+1)*eff_batch_size, 1, :].to(self.device)
                         correct += self.count_correct_batch(pred1, l1)
                         correct += self.count_correct_batch(pred2, l2)
+                        fold_valid_preds[e].append(list(zip(pred1, pred2)))
+                        fold_valid_labels.append(list(zip(l1, l2)))
                         loss = self.pair_loss(emb_t1=emb1, emb_t2=emb2, delta_sigma=ds, pred_1=pred1, pred_2=pred2,
                                             labels_1=l1, labels_2=l2, lamb=lamb)
                         total_loss += float(loss.data)
@@ -295,8 +300,8 @@ class Net(nn.Module):
                     except:
                         valid_acc.append(correct / 1)
             ## TESTING PORTION
-            fold_preds[e] = []
-            fold_labels = []
+            fold_test_preds[e] = []
+            fold_test_labels = []
             with torch.no_grad():
                 total_loss, imgs_seen, correct = 0, 0, 0
                 for i, batch in enumerate(test_dl):
@@ -313,8 +318,8 @@ class Net(nn.Module):
                     l2 = test_labels[i*eff_batch_size : (i+1)*eff_batch_size, 1, :].to(self.device)
                     correct += self.count_correct_batch(pred1, l1)
                     correct += self.count_correct_batch(pred2, l2)
-                    fold_preds[e].append(list(zip(pred1, pred2)))
-                    fold_labels.append(list(zip(l1, l2)))
+                    fold_test_preds[e].append(list(zip(pred1, pred2)))
+                    fold_test_labels.append(list(zip(l1, l2)))
                     loss = self.pair_loss(emb_t1=emb1, emb_t2=emb2, delta_sigma=ds, pred_1=pred1, pred_2=pred2,
                                           labels_1=l1, labels_2=l2, lamb=lamb)
                     total_loss += float(loss.data)
@@ -344,7 +349,7 @@ class Net(nn.Module):
         print([round(x, 4) for x in train_acc], '\n')
         print([round(x, 4) for x in valid_acc], '\n')
         print([round(x, 4) for x in test_acc], '\n')
-        return fold_preds[best_index], test_acc, test_loss_vals, fold_labels
+        return fold_test_preds[best_index], test_acc, test_loss_vals, fold_test_labels, fold_valid_preds[best_index], fold_valid_labels
 
 if __name__ == '__main__':
     image_dim = 64
@@ -357,14 +362,15 @@ if __name__ == '__main__':
     seed = args.seed
     num_folds = args.num_folds
     verbose = args.verbose
+    threshs = (args.th_ci, args.th_hiv)
     assert tau_dim >= 128
     model_args = (alpha, epochs, lamb, batch_size, wd, num_folds, verbose)
-    dir_destination = f'epochs = {epochs} - alpha = {alpha} - batch_size = {batch_size} - lambda = {lamb} - seed {seed}'
+    dir_destination = f'epochs = {epochs} - alpha = {alpha} - batch_size = {batch_size} - lambda = {lamb} - seed {seed} - thresh {threshs}'
     try:
         os.mkdir(dir_destination) # make new directory for results
     except:
         pass # directory already exists -- results will be overridden
-    model = Net(image_dim=image_dim, tau_dim=tau_dim).double().cuda()
+    model = Net(image_dim=image_dim, tau_dim=tau_dim, thresh_tuple=threshs).double().cuda()
     image_pairs, label_pairs, sigma_pairs, delta_sigma_pairs, id_pairs = model.load_matched_data(sigma_feat='npz')
     ratio = model.ratio
     if verbose >= 1:
@@ -376,18 +382,22 @@ if __name__ == '__main__':
     for k in range(num_folds):
         model = Net(image_dim=image_dim, tau_dim=tau_dim).double().cuda()
         model.ratio = ratio
-        fold_preds, fold_accs, fold_losses, fold_labels = model.train_fold(image_pairs, label_pairs, sigma_pairs, 
-                                                                           delta_sigma_pairs, model_args, fold=k, verbose=verbose)
-        with open(f'{dir_destination}/final_preds_fold_{k}_{model_args}.pickle', 'wb') as handle:
-            pk.dump(fold_preds, handle)
-        with open(f'{dir_destination}/final_acc_fold_{k}_{model_args}.pickle', 'wb') as handle:
-            pk.dump(fold_accs, handle)
-        with open(f'{dir_destination}/final_loss_fold_{k}_{model_args}.pickle', 'wb') as handle:
-            pk.dump(fold_losses, handle)
-        with open(f'{dir_destination}/labels_fold_{k}_{model_args}.pickle', 'wb') as handle:
-            pk.dump(fold_labels, handle)
-        with open(f'{dir_destination}/ids_pidn_fold_{k}_{model_args}.pickle', 'wb') as handle:
+        fold_test_preds, fold_test_accs, fold_test_losses, fold_test_labels, fold_valid_preds, fold_valid_labels = model.train_fold(image_pairs, label_pairs, sigma_pairs, 
+                                                                                                                delta_sigma_pairs, model_args, fold=k, verbose=verbose)
+        with open(f'{dir_destination}/final_test_preds_fold_{k}_{model_args}.pickle', 'wb') as handle:
+            pk.dump(fold_test_preds, handle)
+        with open(f'{dir_destination}/final_test_acc_fold_{k}_{model_args}.pickle', 'wb') as handle:
+            pk.dump(fold_test_accs, handle)
+        with open(f'{dir_destination}/final_test_loss_fold_{k}_{model_args}.pickle', 'wb') as handle:
+            pk.dump(fold_test_losses, handle)
+        with open(f'{dir_destination}/labels_test_fold_{k}_{model_args}.pickle', 'wb') as handle:
+            pk.dump(fold_test_labels, handle)
+        with open(f'{dir_destination}/ids_valid_fold_{k}_{model_args}.pickle', 'wb') as handle:
             idx = np.arange(len(image_pairs))
             fold_mask = (idx % num_folds == k)
             pk.dump(id_pairs[fold_mask], handle)
+        with open(f'{dir_destination}/final_valid_preds_fold_{k}_{model_args}.pickle', 'wb') as handle:
+            pk.dump(fold_valid_preds, handle)
+        with open(f'{dir_destination}/labels_valid_fold_{k}_{model_args}.pickle', 'wb') as handle:
+            pk.dump(fold_valid_labels, handle)
         torch.save(model.state_dict(), os.path.join(dir_destination, f'trained_model_fold_{k}_{model_args}.pth'))
