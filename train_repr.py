@@ -7,32 +7,26 @@ import torch.optim as optim
 import random
 import warnings
 import pickle as pk
-
 from torch.utils.data import DataLoader
-
 from tqdm import tqdm
-
 warnings.filterwarnings('ignore')
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--lr', type=float, default=0.0005, help='learning rate')
-parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train')
+parser.add_argument('--epochs', type=int, default=200, help='number of epochs to train')
 parser.add_argument('--lamb', type=float, default=0, help='disentanglement factor')
 parser.add_argument('--batch_size', type=int, default=16, help='input batch size for training')
-parser.add_argument('--wd', type=float, default=0.0, help='weight decay')
-parser.add_argument('--seed', type=int, default=0, help='seed')
-parser.add_argument('--W', type=float, default=1.05, help='additional penalizing weighting for 1s over 0s, on top of ratio')
+parser.add_argument('--wd', type=float, default=0.0, help='weight decay for optimizer')
+parser.add_argument('--seed', type=int, default=1, help='seed for pair matching and model initialization')
+parser.add_argument('--W', type=float, default=1.5, help='additional penalizing weighting for 1s over 0s, on top of ratio')
 parser.add_argument('--th_ci', type=float, default=0.5, help='classification threshold on the CI axis (x-axis)')
 parser.add_argument('--th_hiv', type=float, default=0.5, help='classification threshold on the HIV axis (y-axis)')
 parser.add_argument('--num_folds', type=int, default=5, help='number of folds to split data for CV')
-parser.add_argument('--verbose', type=int, default=0, help='defines how much info is logged to console during training')
+parser.add_argument('--verbose', type=int, default=1, help='defines how much info is logged to console during training')
 args = parser.parse_args()
-
 # set cuda device (GPU / CPU)
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 if args.verbose >= 1:
     print(f'Device: {device}')
-
 # set deterministic behavior based on seed
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
@@ -47,88 +41,55 @@ torch.backends.cudnn.enabled = False # DO NOT REMOVE!
 class Net(nn.Module):
 
     def __init__(self, image_dim=64, tau_dim=2048, thresh_tuple=(0.5, 0.5)):
-        """ image_dim (int): value 'D' such that all images are a 3D-volume DxDxD"""
-        """ tau_dim (int): number of dimensions to encode the tau-direction in"""
+        """ image_dim (int): value 'D' such that all images are a 3D-volume DxDxD """
+        """ tau_dim (int): number of dimensions to encode the tau-direction in """
         super(Net, self).__init__()
         self.device = device
         self.thresh = torch.tensor(thresh_tuple, device=self.device)
         self.dim = image_dim
         self.W = args.W
-        self.ratio = None # ratio between label 0s and label 1s for the BCE loss weighting 
-        self.split = 427
+        self.ratio = None # ratio between label 0s and label 1s for the BCE loss weighting. !! dynamically populated at runtime !!
+        self.hand_split = 427 # separation index for (train+valid) | (test), marking the first index of the sequence of HAND samples at load-time
         # Encoder from 3D-volume input to latent-space vector
-        self.first_encode = nn.Sequential(
-            nn.Sequential(nn.Conv3d(in_channels=1, out_channels=4, kernel_size=3, padding=1),
+        self.encode = nn.Sequential(
+            nn.Sequential(nn.Conv3d(in_channels=1, out_channels=2, kernel_size=3, padding=1),
                           nn.ReLU(),
                           nn.MaxPool3d(kernel_size=2)),
-            nn.BatchNorm3d(4),
-            nn.Sequential(nn.Conv3d(in_channels=4, out_channels=8, kernel_size=3, padding=1),
+            # nn.BatchNorm3d(4),
+            nn.Sequential(nn.Conv3d(in_channels=2, out_channels=4, kernel_size=3, padding=1),
                           nn.ReLU(),
                           nn.MaxPool3d(kernel_size=2)),
-            nn.BatchNorm3d(8),
-            nn.Sequential(nn.Conv3d(in_channels=8, out_channels=4, kernel_size=3, padding=1),
+            # nn.BatchNorm3d(8),
+            nn.Sequential(nn.Conv3d(in_channels=4, out_channels=1, kernel_size=3, padding=1),
                           nn.ReLU(),
                           nn.MaxPool3d(kernel_size=2)),
-            nn.BatchNorm3d(4),
-            nn.Sequential(nn.Conv3d(in_channels=4, out_channels=2, kernel_size=3, padding=1),
-                          nn.ReLU(),
-                          nn.MaxPool3d(kernel_size=2)),
-            nn.Flatten(start_dim=1),
-        )
-
-        self.second_encode = nn.Sequential(
-            nn.Sequential(nn.Conv3d(in_channels=1, out_channels=4, kernel_size=3, padding=1),
-                          nn.ReLU(),
-                          nn.MaxPool3d(kernel_size=2)),
-            nn.BatchNorm3d(4),
-            nn.Sequential(nn.Conv3d(in_channels=4, out_channels=8, kernel_size=3, padding=1),
-                          nn.ReLU(),
-                          nn.MaxPool3d(kernel_size=2)),
-            nn.BatchNorm3d(8),
-            nn.Sequential(nn.Conv3d(in_channels=8, out_channels=4, kernel_size=3, padding=1),
-                          nn.ReLU(),
-                          nn.MaxPool3d(kernel_size=2)),
-            nn.BatchNorm3d(4),
-            nn.Sequential(nn.Conv3d(in_channels=4, out_channels=2, kernel_size=3, padding=1),
-                          nn.ReLU(),
-                          nn.MaxPool3d(kernel_size=2)),
+            # nn.BatchNorm3d(4),
+            # nn.Sequential(nn.Conv3d(in_channels=4, out_channels=2, kernel_size=3, padding=1),
+            #               nn.ReLU(),
+            #               nn.MaxPool3d(kernel_size=2)),
             nn.Flatten(start_dim=1),
         )
 
         self.first_linear = nn.Sequential(
-            nn.Linear(in_features=128, out_features=32),
+            nn.Linear(in_features=512, out_features=32),
             nn.LeakyReLU(),
-            # nn.Linear(in_features=256, out_features=128),
-            # nn.LeakyReLU(),
             nn.Linear(in_features=32, out_features=1),
-            # nn.LeakyReLU(),
-            # nn.Linear(16, 1)
         ).to(self.device)
 
         self.second_linear = nn.Sequential(
-            nn.Linear(in_features=128, out_features=32),
+            nn.Linear(in_features=512, out_features=32),
             nn.LeakyReLU(),
-            # nn.Linear(in_features=256, out_features=128),
-            # nn.LeakyReLU(),
             nn.Linear(in_features=32, out_features=1),
-            # nn.LeakyReLU(),
-            # nn.Linear(16, 1)
         ).to(self.device)
 
     def forward(self, x):
-        e1 = self.first_encode(x) ## Encode to latent-space
-        e2 = self.second_encode(x)
-        e = 0.5 * (e1 + e2)
-        y1 = nn.Sigmoid()(self.first_linear(e1)) # first label classif
-        y2 = nn.Sigmoid()(self.second_linear(e2)) # second label classif
+        e = self.encode(x) ## Encode to latent-space
+        y1 = nn.Sigmoid()(self.first_linear(e)) # first label classif
+        y2 = nn.Sigmoid()(self.second_linear(e)) # second label classif
         y = torch.stack((y1, y2), dim=1).squeeze()
         return e, y
     
     def bce_loss(self, emb_t1, emb_t2, delta_sigma, pred_1, pred_2, labels_1, labels_2, lamb):
-        # bce = nn.BCELoss()
-        # pred_1 = pred_1.nan_to_num(0.5).double()
-        # pred_2 = pred_2.nan_to_num(0.5).double()
-        # return bce(pred_1, labels_1) + bce(pred_2, labels_2)
         pred_1 = pred_1.nan_to_num(0.5).double()
         pred_2 = pred_2.nan_to_num(0.5).double()
         # first element of pairs
@@ -154,11 +115,10 @@ class Net(nn.Module):
     def repr_loss(self, emb_t1, emb_t2, delta_sigma, pred_1, pred_2, labels_1, labels_2, lamb):
         bs = emb_t1.shape[0]
         ones = torch.ones((1, 1, self.dim, self.dim, self.dim), device=self.device).double()
-        # tau = self.encode(ones).flatten()
-        tau = 0.5 * (self.first_encode(ones).flatten() + self.second_encode(ones).flatten())
+        tau = self.encode(ones).flatten()
         proj_e1_len = (emb_t1 @ tau) / tau.norm(p=1)
         proj_e2_len = (emb_t2 @ tau) / tau.norm(p=1)
-        proj_len_diff = proj_e2_len - proj_e1_len
+        proj_len_diff = (proj_e2_len - proj_e1_len)
         disentangle_loss = (proj_len_diff - delta_sigma).nan_to_num(0).square().sum()
         return lamb * disentangle_loss
     
@@ -168,14 +128,6 @@ class Net(nn.Module):
             return bce
         repr = self.repr_loss(emb_t1, emb_t2, delta_sigma, pred_1, pred_2, labels_1, labels_2, lamb)
         return bce + repr
-
-    def update_tau(self, eps=1e-4):
-        ones = torch.ones((1, 1, self.dim, self.dim, self.dim), device=self.device).double()
-        # tau = self.encode(ones).flatten()
-        tau = 0.5 * (self.first_encode(ones).flatten() + self.second_encode(ones).flatten())
-        tau[tau > 0] += eps
-        tau[tau < 0] -= eps
-        return tau
 
     def count_correct_batch(self, batch_preds, batch_labels):
         corr = ((batch_preds >= self.thresh) == batch_labels).all(dim=1).sum()
@@ -193,54 +145,77 @@ class Net(nn.Module):
         labels = np.array(ucsf_df['label'])
         sigmas = np.array(ucsf_df[sigma_feat])
         # set the weighting ratio for the BCE Loss
-        lab = labels[:self.split]
+        lab = labels[:self.hand_split]
         num_ones = lab.sum().sum()
         num_zeros = 2 * int(lab.shape[0]) - num_ones
         self.ratio = self.W * (num_zeros / num_ones)
         # Apply deterministic shuffle in the list (meaning all lists are shuffled in a same random order)
         #   pair samples with sigma feat (NPZ) present together!
-        has_sigma = ~np.isnan(sigmas)[:self.split]
+        has_sigma = np.isfinite(sigmas[:self.hand_split])
         ordering = np.hstack((
-            shuffle(np.arange(self.split)[has_sigma], random_state=seed),
-            shuffle(np.arange(self.split)[~has_sigma], random_state=seed),
-            shuffle(np.arange(self.split, len(images)), random_state=seed)
+            shuffle(np.arange(self.hand_split)[has_sigma], random_state=seed),
+            shuffle(np.arange(self.hand_split)[np.flip(has_sigma)], random_state=seed),
+            shuffle(np.arange(self.hand_split, len(images)), random_state=seed)
         ))
         ids = ids[ordering]
         images = images[ordering]
         labels = labels[ordering]
         sigmas = sigmas[ordering]
-        # Make into pairs
-        num_pairs = len(labels) // 2
-        image_pairs = torch.tensor([(images[2*i], images[2*i + 1]) for i in range(num_pairs)])
-        label_pairs = torch.tensor([(labels[2*i], labels[2*i + 1]) for i in range(num_pairs)]).double()
-        sigma_pairs = torch.tensor([(sigmas[2*i], sigmas[2*i + 1]) for i in range(num_pairs)])
-        delta_sigma_pairs = torch.tensor([sigmas[2*i] - sigmas[2*i + 1] for i in range(num_pairs)])
-        id_pairs = torch.tensor([(ids[2*i], ids[2*i + 1]) for i in range(num_pairs)])
-        return image_pairs, label_pairs, sigma_pairs, delta_sigma_pairs, id_pairs
-
-    def train_fold(self, image_pairs, label_pairs, sigma_pairs, delta_sigma_pairs, model_args, fold, verbose):
+        delta_sigmas = np.diff(sigmas)
+        return images, labels, sigmas, delta_sigmas, ids
+        
+    def train_fold(self, all_images, all_labels, all_sigmas, all_delta_sigmas, model_args, fold, verbose):
+        from sklearn.model_selection import StratifiedKFold
         alpha, epochs, lamb, batch_size, wd, num_folds, _ = model_args
-        # train_mask = np.arange(len(image_pairs)) % num_folds != fold
-        # valid_mask = np.arange(len(image_pairs)) % num_folds == (0 if fold != 0 else 1)
-        train_mask = np.arange(len(image_pairs)) % num_folds == 0
-        valid_mask = np.arange(len(image_pairs)) % num_folds != 0
-        train_mask[(self.split - 1) // 2:] = False
-        valid_mask[(self.split - 1) // 2:] = False
-        test_mask = np.arange((self.split + 1) // 2, len(image_pairs))
-        train_labels, valid_labels, test_labels = label_pairs[train_mask], label_pairs[valid_mask], label_pairs[test_mask]
-        train_del_sigmas, valid_del_sigmas, test_del_sigmas = delta_sigma_pairs[train_mask], delta_sigma_pairs[valid_mask], delta_sigma_pairs[test_mask]
-        train_dl = DataLoader(image_pairs[train_mask], batch_size=batch_size, shuffle=False)
-        valid_dl = DataLoader(image_pairs[valid_mask], batch_size=batch_size, shuffle=False)
-        test_dl = DataLoader(image_pairs[test_mask], batch_size=batch_size, shuffle=False)
+        label_reference = {'[0 0]' : 'CTRL', '[0 1]' : 'HIV', '[1 0]' : 'MCI', '[1 1]' : 'HAND'}
+        all_named_labels = np.array([label_reference[str(lab)] for lab in all_labels])
+        skf = StratifiedKFold(n_splits=num_folds, shuffle=False) # shuffled is handled with matching at load-time
+        for i, (train_mask, valid_mask) in enumerate(skf.split(all_images[:self.hand_split], all_named_labels[:self.hand_split])):
+            if i == fold:
+                break # retains train_mask and valid_mask for the specific fold --this is the endorsed documentation approach
+        test_mask = np.arange(self.hand_split, len(all_images))
+        # Make into pairs & split into different sets
+        # --> TRAIN
+        images = all_images[train_mask]
+        labels = all_labels[train_mask]
+        sigmas = all_sigmas[train_mask]
+        num_pairs = len(labels) // 2
+        train_images = torch.tensor([(images[2*i], images[2*i + 1]) for i in range(num_pairs)])
+        train_labels = torch.tensor([(labels[2*i], labels[2*i + 1]) for i in range(num_pairs)]).double()
+        train_del_sigmas = torch.tensor([sigmas[2*i] - sigmas[2*i + 1] for i in range(num_pairs)])
+        train_id_pairs = torch.tensor([(ids[2*i], ids[2*i + 1]) for i in range(num_pairs)])
+        train_dl = DataLoader(train_images, batch_size=batch_size, shuffle=False)
+        # --> VALID
+        images = all_images[valid_mask]
+        labels = all_labels[valid_mask]
+        sigmas = all_sigmas[valid_mask]
+        num_pairs = len(labels) // 2
+        valid_images = torch.tensor([(images[2*i], images[2*i + 1]) for i in range(num_pairs)])
+        valid_labels = torch.tensor([(labels[2*i], labels[2*i + 1]) for i in range(num_pairs)]).double()
+        valid_del_sigmas = torch.tensor([sigmas[2*i] - sigmas[2*i + 1] for i in range(num_pairs)])
+        valid_id_pairs = torch.tensor([(ids[2*i], ids[2*i + 1]) for i in range(num_pairs)])
+        valid_dl = DataLoader(valid_images, batch_size=batch_size, shuffle=False)
+        # --> TEST
+        images = all_images[test_mask]
+        labels = all_labels[test_mask]
+        sigmas = all_sigmas[test_mask]
+        num_pairs = len(labels) // 2
+        test_images = torch.tensor([(images[2*i], images[2*i + 1]) for i in range(num_pairs)])
+        test_labels = torch.tensor([(labels[2*i], labels[2*i + 1]) for i in range(num_pairs)]).double()
+        test_del_sigmas = torch.tensor([sigmas[2*i] - sigmas[2*i + 1] for i in range(num_pairs)])
+        test_id_pairs = torch.tensor([(ids[2*i], ids[2*i + 1]) for i in range(num_pairs)])
+        test_dl = DataLoader(test_images, batch_size=batch_size, shuffle=False)
+        # Setup metrics & optimizer
         train_loss_vals, train_acc, valid_loss_vals, valid_acc, test_loss_vals, test_acc = [], [], [], [], [], []
-        opt = optim.Adam(self.parameters(), lr=alpha, weight_decay=wd)
         fold_valid_preds, fold_test_preds = dict(), dict()
+        opt = optim.Adam(self.parameters(), lr=alpha, weight_decay=wd)
+        # BEGIN TRAINING
         for e in tqdm(range(epochs), desc=f'Fold {fold}'):
             total_loss, imgs_seen, correct = 0, 0, 0
             for i, batch in enumerate(train_dl):
                 eff_batch_size = batch.shape[0]
                 imgs_seen += 2 * eff_batch_size
-                # SHAPE: (batch_size, channel_in, image_dim, image_dim, image_dim)
+                # shape: (batch_size, channel_in, image_dim, image_dim, image_dim)
                 img1 = batch[:, 0, :, :, :].unsqueeze(1).to(self.device)
                 img2 = batch[:, 1, :, :, :].unsqueeze(1).to(self.device)
                 img_input = torch.cat((img1, img2))
@@ -250,7 +225,6 @@ class Net(nn.Module):
                 ds = train_del_sigmas[i*eff_batch_size : (i+1)*eff_batch_size].to(self.device)
                 l1 = train_labels[i*eff_batch_size : (i+1)*eff_batch_size, 0, :].to(self.device)
                 l2 = train_labels[i*eff_batch_size : (i+1)*eff_batch_size, 1, :].to(self.device)
-                # print('TRAIN\n', torch.hstack((pred1, l1))[:3].detach().cpu().numpy().round(decimals=1))
                 correct += self.count_correct_batch(pred1, l1)
                 correct += self.count_correct_batch(pred2, l2)
                 opt.zero_grad()
@@ -267,7 +241,7 @@ class Net(nn.Module):
                     total_loss = total_loss + float(loss1.data)
                 opt.step()                
             p = nn.utils.parameters_to_vector(self.parameters())
-            train_loss_vals.append(total_loss / 1)
+            train_loss_vals.append(total_loss / imgs_seen)
             train_acc.append(correct / imgs_seen)
             ## VALIDATION PORTION
             fold_valid_preds[e] = []
@@ -294,11 +268,8 @@ class Net(nn.Module):
                         loss = self.pair_loss(emb_t1=emb1, emb_t2=emb2, delta_sigma=ds, pred_1=pred1, pred_2=pred2,
                                             labels_1=l1, labels_2=l2, lamb=lamb)
                         total_loss += float(loss.data)
-                    valid_loss_vals.append(total_loss / 1)
-                    try:
-                        valid_acc.append(correct / imgs_seen)
-                    except:
-                        valid_acc.append(correct / 1)
+                    valid_loss_vals.append(total_loss / imgs_seen)
+                    valid_acc.append(correct / imgs_seen)
             ## TESTING PORTION
             fold_test_preds[e] = []
             fold_test_labels = []
@@ -324,14 +295,14 @@ class Net(nn.Module):
                                           labels_1=l1, labels_2=l2, lamb=lamb)
                     total_loss += float(loss.data)
                 # print(' TEST\n', pred1[:20].detach().cpu().numpy().round(decimals=2)) # outside batch loop so it only prints once per epoch
-                test_loss_vals.append(total_loss / 1)
+                test_loss_vals.append(total_loss / imgs_seen)
                 test_acc.append(correct / imgs_seen)
-                torch.save(self.state_dict(), os.path.join(dir_destination, f'interm_model_lamb_{lamb}_epoch_{e+1}.pth'))
-            FREQ = 1 # adjust as needed for verbosity
+                torch.save(self.state_dict(), os.path.join(dir_destination, f'interm_model_lamb_{lamb}_epoch_{"{0:0=2d}".format(e+1)}_fold_{fold}.pth'))
+            FREQ = 5 # adjust as needed for verbosity
             if e % FREQ == 0:
                 if verbose >= 1:
-                    print(f'    Epoch {e+1} Results -> train loss = {round(train_loss_vals[-1], 6)} | valid loss = {round(valid_loss_vals[-1], 6)} | test loss = {round(test_loss_vals[-1], 6)}')
-                    print(f'                     -> train  acc = {round(100*train_acc[-1], 2)}% | valid acc = {round(100*valid_acc[-1], 2)} | test acc = {round(100*test_acc[-1], 2)}%')
+                    print(f'    Epoch {e+1} Results -> train loss = {round(train_loss_vals[-1], 4)} | valid loss = {round(valid_loss_vals[-1], 4)} | test loss = {round(test_loss_vals[-1], 4)}')
+                    print(f'                     -> train  acc = {round(100*train_acc[-1], 2)}% | valid acc = {round(100*valid_acc[-1], 2)}% | test acc = {round(100*test_acc[-1], 2)}%')
                     if verbose >= 2:
                         if len(train_acc) >= (FREQ + 1):
                             train_acc_delta = train_acc[-1] - train_acc[-FREQ-1]
@@ -343,13 +314,13 @@ class Net(nn.Module):
                             test_loss_delta = test_loss_vals[-1] - test_loss_vals[-FREQ-1]
                             s1 = '+' if train_loss_delta > 0 else ''
                             s2 = '+' if test_loss_delta > 0 else ''            
-                            print(f'    Train Loss Delta: {s1}{round(train_loss_delta, 6)} \n     Test Loss Delta: {s2}{round(test_loss_delta, 6)}')
+                            print(f'    Train Loss Delta: {s1}{round(train_loss_delta, 4)} \n     Test Loss Delta: {s2}{round(test_loss_delta, 4)}')
         best_index = np.argmax(test_acc)
         print(f'[DONE] FOLD {fold} --- Best Epoch Results ({best_index + 1}) -> TRAIN ACC = {round(100*train_acc[best_index], 2)}% | TEST ACC = {round(100*test_acc[best_index], 2)}%\n')
         print([round(x, 4) for x in train_acc], '\n')
         print([round(x, 4) for x in valid_acc], '\n')
         print([round(x, 4) for x in test_acc], '\n')
-        return fold_test_preds[best_index], test_acc, test_loss_vals, fold_test_labels, fold_valid_preds[best_index], fold_valid_labels
+        return fold_test_preds[best_index], test_acc, test_loss_vals, fold_test_labels, fold_valid_preds[best_index], fold_valid_labels, valid_id_pairs
 
 if __name__ == '__main__':
     image_dim = 64
@@ -371,19 +342,24 @@ if __name__ == '__main__':
     except:
         pass # directory already exists -- results will be overridden
     model = Net(image_dim=image_dim, tau_dim=tau_dim, thresh_tuple=threshs).double().cuda()
-    image_pairs, label_pairs, sigma_pairs, delta_sigma_pairs, id_pairs = model.load_matched_data(sigma_feat='npz')
+    images, labels, sigmas, delta_sigmas, ids = model.load_matched_data(sigma_feat='npz')
     ratio = model.ratio
     if verbose >= 1:
         print(f'Run Initialized: epochs = {epochs}; alpha = {alpha}; batch_size = {batch_size}; lambda = {lamb}; FOLDS = {num_folds}')
-        print(f'Data Loaded - {2 * len(image_pairs)} matched patients')
-        print(f'Model Initialized: image_dim = {image_dim}x{image_dim}x{image_dim}; tau_dim = {tau_dim}')
+        print(f'Data Loaded - {len(images)} matched patients')
+        print(f'Model Initialized: image_dim = {image_dim}x{image_dim}x{image_dim}')
         if verbose >= 2:
             print(f'--> Starting Training')
     for k in range(num_folds):
-        model = Net(image_dim=image_dim, tau_dim=tau_dim).double().cuda()
+        model = Net(image_dim=image_dim, tau_dim=tau_dim, thresh_tuple=threshs).double().cuda()
         model.ratio = ratio
-        fold_test_preds, fold_test_accs, fold_test_losses, fold_test_labels, fold_valid_preds, fold_valid_labels = model.train_fold(image_pairs, label_pairs, sigma_pairs, 
-                                                                                                                delta_sigma_pairs, model_args, fold=k, verbose=verbose)
+        fold_test_preds, fold_test_accs, fold_test_losses, fold_test_labels, fold_valid_preds, fold_valid_labels, fold_ids = model.train_fold(images,
+                                                                                                                                              labels,
+                                                                                                                                              sigmas,
+                                                                                                                                              delta_sigmas,
+                                                                                                                                              model_args,
+                                                                                                                                              fold=k,
+                                                                                                                                              verbose=verbose)
         with open(f'{dir_destination}/final_test_preds_fold_{k}_{model_args}.pickle', 'wb') as handle:
             pk.dump(fold_test_preds, handle)
         with open(f'{dir_destination}/final_test_acc_fold_{k}_{model_args}.pickle', 'wb') as handle:
@@ -393,9 +369,7 @@ if __name__ == '__main__':
         with open(f'{dir_destination}/labels_test_fold_{k}_{model_args}.pickle', 'wb') as handle:
             pk.dump(fold_test_labels, handle)
         with open(f'{dir_destination}/ids_valid_fold_{k}_{model_args}.pickle', 'wb') as handle:
-            idx = np.arange(len(image_pairs))
-            fold_mask = (idx % num_folds == k)
-            pk.dump(id_pairs[fold_mask], handle)
+            pk.dump(fold_ids, handle)
         with open(f'{dir_destination}/final_valid_preds_fold_{k}_{model_args}.pickle', 'wb') as handle:
             pk.dump(fold_valid_preds, handle)
         with open(f'{dir_destination}/labels_valid_fold_{k}_{model_args}.pickle', 'wb') as handle:
