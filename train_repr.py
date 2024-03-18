@@ -14,14 +14,14 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--lr', type=float, default=0.0005, help='learning rate')
 parser.add_argument('--epochs', type=int, default=200, help='number of epochs to train')
 parser.add_argument('--lamb', type=float, default=0, help='disentanglement factor')
-parser.add_argument('--batch_size', type=int, default=16, help='input batch size for training')
-parser.add_argument('--wd', type=float, default=0.0, help='weight decay for optimizer')
+parser.add_argument('--batch_size', type=int, default=32, help='input batch size for training')
+parser.add_argument('--wd', type=float, default=0.01, help='weight decay for optimizer')
 parser.add_argument('--seed', type=int, default=1, help='seed for pair matching and model initialization')
-parser.add_argument('--W', type=float, default=1.5, help='additional penalizing weighting for 1s over 0s, on top of ratio')
+parser.add_argument('--W', type=float, default=1.0, help='additional penalizing weighting for 1s over 0s, on top of ratio')
 parser.add_argument('--th_ci', type=float, default=0.5, help='classification threshold on the CI axis (x-axis)')
 parser.add_argument('--th_hiv', type=float, default=0.5, help='classification threshold on the HIV axis (y-axis)')
 parser.add_argument('--num_folds', type=int, default=5, help='number of folds to split data for CV')
-parser.add_argument('--verbose', type=int, default=1, help='defines how much info is logged to console during training')
+parser.add_argument('--verbose', type=int, default=0, help='defines how much info is logged to console during training')
 args = parser.parse_args()
 # set cuda device (GPU / CPU)
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -52,33 +52,36 @@ class Net(nn.Module):
         self.hand_split = 427 # separation index for (train+valid) | (test), marking the first index of the sequence of HAND samples at load-time
         # Encoder from 3D-volume input to latent-space vector
         self.encode = nn.Sequential(
-            nn.Sequential(nn.Conv3d(in_channels=1, out_channels=2, kernel_size=3, padding=1),
+            nn.Sequential(nn.Conv3d(in_channels=1, out_channels=4, kernel_size=3, padding=1),
                           nn.ReLU(),
                           nn.MaxPool3d(kernel_size=2)),
-            # nn.BatchNorm3d(4),
-            nn.Sequential(nn.Conv3d(in_channels=2, out_channels=4, kernel_size=3, padding=1),
+            nn.BatchNorm3d(4),
+            nn.Sequential(nn.Conv3d(in_channels=4, out_channels=8, kernel_size=3, padding=1),
                           nn.ReLU(),
                           nn.MaxPool3d(kernel_size=2)),
-            # nn.BatchNorm3d(8),
-            nn.Sequential(nn.Conv3d(in_channels=4, out_channels=1, kernel_size=3, padding=1),
+            nn.BatchNorm3d(8),
+            nn.Sequential(nn.Conv3d(in_channels=8, out_channels=4, kernel_size=3, padding=1),
                           nn.ReLU(),
                           nn.MaxPool3d(kernel_size=2)),
-            # nn.BatchNorm3d(4),
-            # nn.Sequential(nn.Conv3d(in_channels=4, out_channels=2, kernel_size=3, padding=1),
-            #               nn.ReLU(),
-            #               nn.MaxPool3d(kernel_size=2)),
+            nn.BatchNorm3d(4),
+            nn.Sequential(nn.Conv3d(in_channels=4, out_channels=2, kernel_size=3, padding=1),
+                          nn.ReLU(),
+                          nn.MaxPool3d(kernel_size=2)),
+            nn.BatchNorm3d(2),                          
             nn.Flatten(start_dim=1),
         )
 
         self.first_linear = nn.Sequential(
-            nn.Linear(in_features=512, out_features=32),
+            nn.Linear(in_features=128, out_features=32),
+            nn.Dropout(0.5),
             nn.LeakyReLU(),
             nn.Linear(in_features=32, out_features=1),
         ).to(self.device)
 
         self.second_linear = nn.Sequential(
-            nn.Linear(in_features=512, out_features=32),
-            nn.LeakyReLU(),
+            nn.Linear(in_features=128, out_features=32),
+            nn.Dropout(0.5),            
+            nn.LeakyReLU(),          
             nn.Linear(in_features=32, out_features=1),
         ).to(self.device)
 
@@ -113,21 +116,20 @@ class Net(nn.Module):
         return bce_loss
 
     def repr_loss(self, emb_t1, emb_t2, delta_sigma, pred_1, pred_2, labels_1, labels_2, lamb):
-        bs = emb_t1.shape[0]
         ones = torch.ones((1, 1, self.dim, self.dim, self.dim), device=self.device).double()
         tau = self.encode(ones).flatten()
         proj_e1_len = (emb_t1 @ tau) / tau.norm(p=1)
         proj_e2_len = (emb_t2 @ tau) / tau.norm(p=1)
         proj_len_diff = (proj_e2_len - proj_e1_len)
         disentangle_loss = (proj_len_diff - delta_sigma).nan_to_num(0).square().sum()
-        return lamb * disentangle_loss
+        return disentangle_loss
     
     def pair_loss(self, emb_t1, emb_t2, delta_sigma, pred_1, pred_2, labels_1, labels_2, lamb):
         bce = self.bce_loss(emb_t1, emb_t2, delta_sigma, pred_1, pred_2, labels_1, labels_2, lamb)
         if lamb == 0:
             return bce
-        repr = self.repr_loss(emb_t1, emb_t2, delta_sigma, pred_1, pred_2, labels_1, labels_2, lamb)
-        return bce + repr
+        disentang = self.repr_loss(emb_t1, emb_t2, delta_sigma, pred_1, pred_2, labels_1, labels_2, lamb)
+        return bce + lamb * disentang
 
     def count_correct_batch(self, batch_preds, batch_labels):
         corr = ((batch_preds >= self.thresh) == batch_labels).all(dim=1).sum()
@@ -154,7 +156,7 @@ class Net(nn.Module):
         has_sigma = np.isfinite(sigmas[:self.hand_split])
         ordering = np.hstack((
             shuffle(np.arange(self.hand_split)[has_sigma], random_state=seed),
-            shuffle(np.arange(self.hand_split)[np.flip(has_sigma)], random_state=seed),
+            shuffle(np.arange(self.hand_split)[~(has_sigma)], random_state=seed),
             shuffle(np.arange(self.hand_split, len(images)), random_state=seed)
         ))
         ids = ids[ordering]
@@ -298,7 +300,7 @@ class Net(nn.Module):
                 test_loss_vals.append(total_loss / imgs_seen)
                 test_acc.append(correct / imgs_seen)
                 torch.save(self.state_dict(), os.path.join(dir_destination, f'interm_model_lamb_{lamb}_epoch_{"{0:0=2d}".format(e+1)}_fold_{fold}.pth'))
-            FREQ = 5 # adjust as needed for verbosity
+            FREQ = 1 # adjust as needed for verbosity
             if e % FREQ == 0:
                 if verbose >= 1:
                     print(f'    Epoch {e+1} Results -> train loss = {round(train_loss_vals[-1], 4)} | valid loss = {round(valid_loss_vals[-1], 4)} | test loss = {round(test_loss_vals[-1], 4)}')
@@ -315,8 +317,9 @@ class Net(nn.Module):
                             s1 = '+' if train_loss_delta > 0 else ''
                             s2 = '+' if test_loss_delta > 0 else ''            
                             print(f'    Train Loss Delta: {s1}{round(train_loss_delta, 4)} \n     Test Loss Delta: {s2}{round(test_loss_delta, 4)}')
-        best_index = np.argmax(test_acc)
-        print(f'[DONE] FOLD {fold} --- Best Epoch Results ({best_index + 1}) -> TRAIN ACC = {round(100*train_acc[best_index], 2)}% | TEST ACC = {round(100*test_acc[best_index], 2)}%\n')
+        # best_index = np.argmax(test_acc)
+        best_index = np.argmax(valid_acc)
+        print(f'[DONE] FOLD {fold} --- Best Valid Epoch Results ({best_index + 1}) -> TRAIN ACC = {round(100*train_acc[best_index], 2)}% | VALID ACC = {round(100*valid_acc[best_index], 2)}% | TEST ACC = {round(100*test_acc[best_index], 2)}%\n')
         print([round(x, 4) for x in train_acc], '\n')
         print([round(x, 4) for x in valid_acc], '\n')
         print([round(x, 4) for x in test_acc], '\n')
@@ -333,10 +336,11 @@ if __name__ == '__main__':
     seed = args.seed
     num_folds = args.num_folds
     verbose = args.verbose
+    W = args.W
     threshs = (args.th_ci, args.th_hiv)
     assert tau_dim >= 128
     model_args = (alpha, epochs, lamb, batch_size, wd, num_folds, verbose)
-    dir_destination = f'epochs = {epochs} - alpha = {alpha} - batch_size = {batch_size} - lambda = {lamb} - seed {seed} - thresh {threshs}'
+    dir_destination = f'epochs = {epochs} - alpha = {alpha} - batch_size = {batch_size} - lambda = {lamb} - W = {W} - seed {seed}'
     try:
         os.mkdir(dir_destination) # make new directory for results
     except:
@@ -344,8 +348,8 @@ if __name__ == '__main__':
     model = Net(image_dim=image_dim, tau_dim=tau_dim, thresh_tuple=threshs).double().cuda()
     images, labels, sigmas, delta_sigmas, ids = model.load_matched_data(sigma_feat='npz')
     ratio = model.ratio
+    print(f'Run Initialized: {dir_destination}')
     if verbose >= 1:
-        print(f'Run Initialized: epochs = {epochs}; alpha = {alpha}; batch_size = {batch_size}; lambda = {lamb}; FOLDS = {num_folds}')
         print(f'Data Loaded - {len(images)} matched patients')
         print(f'Model Initialized: image_dim = {image_dim}x{image_dim}x{image_dim}')
         if verbose >= 2:
