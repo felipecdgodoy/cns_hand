@@ -7,7 +7,7 @@ import torch.optim as optim
 import random
 import warnings
 import pickle as pk
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 warnings.filterwarnings('ignore')
 parser = argparse.ArgumentParser()
@@ -37,6 +37,20 @@ torch.backends.cudnn.enabled = False # DO NOT REMOVE!
 
 # DEBUG
 # torch.autograd.set_detect_anomaly(True)
+
+class PairedDataset(Dataset):
+
+    def __init__(self, image_pairs, label_pairs, del_sigma_pairs, id_pairs):
+        self.image_pairs = image_pairs
+        self.label_pairs = label_pairs
+        self.del_sigma_pairs = del_sigma_pairs
+        self.id_pairs = id_pairs
+
+    def __len__(self):
+        return len(self.image_pairs)
+
+    def __getitem__(self, idx):
+        return self.image_pairs[idx], self.label_pairs[idx], self.del_sigma_pairs[idx], self.id_pairs[idx]
 
 class Net(nn.Module):
 
@@ -135,7 +149,7 @@ class Net(nn.Module):
         corr = ((batch_preds >= self.thresh) == batch_labels).all(dim=1).sum()
         return int(corr.data)
     
-    def load_matched_data(self, path_to_pickles='', sigma_feat='npz', seed=2023):
+    def load_matched_data(self, path_to_pickles='', sigma_feat='npz', seed=1):
         sigma_feat = sigma_feat.lower()
         assert sigma_feat in ['npz', 'age', 'gender'], f'Unsurported feature. must be age, npz, or gender'
         from sklearn.utils import shuffle
@@ -153,7 +167,7 @@ class Net(nn.Module):
         self.ratio = self.W * (num_zeros / num_ones)
         # Apply deterministic shuffle in the list (meaning all lists are shuffled in a same random order)
         #   pair samples with sigma feat (NPZ) present together!
-        has_sigma = np.isfinite(sigmas[:self.hand_split])
+        has_sigma = ~np.isnan(sigmas)[:self.hand_split]
         ordering = np.hstack((
             shuffle(np.arange(self.hand_split)[has_sigma], random_state=seed),
             shuffle(np.arange(self.hand_split)[~(has_sigma)], random_state=seed),
@@ -186,7 +200,8 @@ class Net(nn.Module):
         train_labels = torch.tensor([(labels[2*i], labels[2*i + 1]) for i in range(num_pairs)]).double()
         train_del_sigmas = torch.tensor([sigmas[2*i] - sigmas[2*i + 1] for i in range(num_pairs)])
         train_id_pairs = torch.tensor([(ids[2*i], ids[2*i + 1]) for i in range(num_pairs)])
-        train_dl = DataLoader(train_images, batch_size=batch_size, shuffle=False)
+        train_dataset = PairedDataset(train_images, train_labels, train_del_sigmas, train_id_pairs)
+        train_dl = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
         # --> VALID
         images = all_images[valid_mask]
         labels = all_labels[valid_mask]
@@ -196,7 +211,8 @@ class Net(nn.Module):
         valid_labels = torch.tensor([(labels[2*i], labels[2*i + 1]) for i in range(num_pairs)]).double()
         valid_del_sigmas = torch.tensor([sigmas[2*i] - sigmas[2*i + 1] for i in range(num_pairs)])
         valid_id_pairs = torch.tensor([(ids[2*i], ids[2*i + 1]) for i in range(num_pairs)])
-        valid_dl = DataLoader(valid_images, batch_size=batch_size, shuffle=False)
+        valid_dataset = PairedDataset(valid_images, valid_labels, valid_del_sigmas, valid_id_pairs)
+        valid_dl = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False)
         # --> TEST
         images = all_images[test_mask]
         labels = all_labels[test_mask]
@@ -206,7 +222,8 @@ class Net(nn.Module):
         test_labels = torch.tensor([(labels[2*i], labels[2*i + 1]) for i in range(num_pairs)]).double()
         test_del_sigmas = torch.tensor([sigmas[2*i] - sigmas[2*i + 1] for i in range(num_pairs)])
         test_id_pairs = torch.tensor([(ids[2*i], ids[2*i + 1]) for i in range(num_pairs)])
-        test_dl = DataLoader(test_images, batch_size=batch_size, shuffle=False)
+        test_dataset = PairedDataset(test_images, test_labels, test_del_sigmas, test_id_pairs)
+        test_dl = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
         # Setup metrics & optimizer
         train_loss_vals, train_acc, valid_loss_vals, valid_acc, test_loss_vals, test_acc = [], [], [], [], [], []
         fold_valid_preds, fold_test_preds = dict(), dict()
@@ -215,18 +232,19 @@ class Net(nn.Module):
         for e in tqdm(range(epochs), desc=f'Fold {fold}'):
             total_loss, imgs_seen, correct = 0, 0, 0
             for i, batch in enumerate(train_dl):
-                eff_batch_size = batch.shape[0]
+                batch_images, batch_labels, batch_del_sigmas, batch_id_pairs = batch
+                eff_batch_size = batch_images.shape[0]
                 imgs_seen += 2 * eff_batch_size
-                # shape: (batch_size, channel_in, image_dim, image_dim, image_dim)
-                img1 = batch[:, 0, :, :, :].unsqueeze(1).to(self.device)
-                img2 = batch[:, 1, :, :, :].unsqueeze(1).to(self.device)
+                # shape: (batch_size, pair_position, image_dim, image_dim, image_dim)
+                img1 = batch_images[:, 0, :, :, :].unsqueeze(1).to(self.device)
+                img2 = batch_images[:, 1, :, :, :].unsqueeze(1).to(self.device)
                 img_input = torch.cat((img1, img2))
                 embeddings, class_preds = self.forward(img_input)
                 pred1, pred2 = class_preds[:eff_batch_size], class_preds[eff_batch_size:]
                 emb1, emb2 = embeddings[:eff_batch_size], embeddings[eff_batch_size:]
-                ds = train_del_sigmas[i*eff_batch_size : (i+1)*eff_batch_size].to(self.device)
-                l1 = train_labels[i*eff_batch_size : (i+1)*eff_batch_size, 0, :].to(self.device)
-                l2 = train_labels[i*eff_batch_size : (i+1)*eff_batch_size, 1, :].to(self.device)
+                ds = batch_del_sigmas.to(self.device)
+                l1 = batch_labels[:, 0, :].to(self.device)
+                l2 = batch_labels[:, 1, :].to(self.device)
                 correct += self.count_correct_batch(pred1, l1)
                 correct += self.count_correct_batch(pred2, l2)
                 opt.zero_grad()
@@ -252,17 +270,19 @@ class Net(nn.Module):
                 with torch.no_grad():
                     total_loss, imgs_seen, correct = 0, 0, 0
                     for i, batch in enumerate(valid_dl):
-                        eff_batch_size = batch.shape[0]
+                        batch_images, batch_labels, batch_del_sigmas, batch_id_pairs = batch
+                        eff_batch_size = batch_images.shape[0]
                         imgs_seen += 2 * eff_batch_size
-                        img1 = batch[:, 0, :, :, :].unsqueeze(1).to(self.device)
-                        img2 = batch[:, 1, :, :, :].unsqueeze(1).to(self.device)
+                        # shape: (batch_size, pair_position, image_dim, image_dim, image_dim)
+                        img1 = batch_images[:, 0, :, :, :].unsqueeze(1).to(self.device)
+                        img2 = batch_images[:, 1, :, :, :].unsqueeze(1).to(self.device)
                         img_input = torch.cat((img1, img2))
                         embeddings, class_preds = self.forward(img_input)
                         pred1, pred2 = class_preds[:eff_batch_size], class_preds[eff_batch_size:]
                         emb1, emb2 = embeddings[:eff_batch_size], embeddings[eff_batch_size:]
-                        ds = valid_del_sigmas[i*eff_batch_size : (i+1)*eff_batch_size].to(self.device)
-                        l1 = valid_labels[i*eff_batch_size : (i+1)*eff_batch_size, 0, :].to(self.device)
-                        l2 = valid_labels[i*eff_batch_size : (i+1)*eff_batch_size, 1, :].to(self.device)
+                        ds = batch_del_sigmas.to(self.device)
+                        l1 = batch_labels[:, 0, :].to(self.device)
+                        l2 = batch_labels[:, 1, :].to(self.device)
                         correct += self.count_correct_batch(pred1, l1)
                         correct += self.count_correct_batch(pred2, l2)
                         fold_valid_preds[e].append(list(zip(pred1, pred2)))
@@ -278,17 +298,19 @@ class Net(nn.Module):
             with torch.no_grad():
                 total_loss, imgs_seen, correct = 0, 0, 0
                 for i, batch in enumerate(test_dl):
-                    eff_batch_size = batch.shape[0]
+                    batch_images, batch_labels, batch_del_sigmas, batch_id_pairs = batch
+                    eff_batch_size = batch_images.shape[0]
                     imgs_seen += 2 * eff_batch_size
-                    img1 = batch[:, 0, :, :, :].unsqueeze(1).to(self.device)
-                    img2 = batch[:, 1, :, :, :].unsqueeze(1).to(self.device)
+                    # shape: (batch_size, pair_position, image_dim, image_dim, image_dim)
+                    img1 = batch_images[:, 0, :, :, :].unsqueeze(1).to(self.device)
+                    img2 = batch_images[:, 1, :, :, :].unsqueeze(1).to(self.device)
                     img_input = torch.cat((img1, img2))
                     embeddings, class_preds = self.forward(img_input)
                     pred1, pred2 = class_preds[:eff_batch_size], class_preds[eff_batch_size:]
                     emb1, emb2 = embeddings[:eff_batch_size], embeddings[eff_batch_size:]
-                    ds = test_del_sigmas[i*eff_batch_size : (i+1)*eff_batch_size].to(self.device)
-                    l1 = test_labels[i*eff_batch_size : (i+1)*eff_batch_size, 0, :].to(self.device)
-                    l2 = test_labels[i*eff_batch_size : (i+1)*eff_batch_size, 1, :].to(self.device)
+                    ds = batch_del_sigmas.to(self.device)
+                    l1 = batch_labels[:, 0, :].to(self.device)
+                    l2 = batch_labels[:, 1, :].to(self.device)
                     correct += self.count_correct_batch(pred1, l1)
                     correct += self.count_correct_batch(pred2, l2)
                     fold_test_preds[e].append(list(zip(pred1, pred2)))
@@ -299,12 +321,11 @@ class Net(nn.Module):
                 # print(' TEST\n', pred1[:20].detach().cpu().numpy().round(decimals=2)) # outside batch loop so it only prints once per epoch
                 test_loss_vals.append(total_loss / imgs_seen)
                 test_acc.append(correct / imgs_seen)
-                torch.save(self.state_dict(), os.path.join(dir_destination, f'interm_model_lamb_{lamb}_epoch_{"{0:0=2d}".format(e+1)}_fold_{fold}.pth'))
             FREQ = 1 # adjust as needed for verbosity
             if e % FREQ == 0:
                 if verbose >= 1:
                     print(f'    Epoch {e+1} Results -> train loss = {round(train_loss_vals[-1], 4)} | valid loss = {round(valid_loss_vals[-1], 4)} | test loss = {round(test_loss_vals[-1], 4)}')
-                    print(f'                     -> train  acc = {round(100*train_acc[-1], 2)}% | valid acc = {round(100*valid_acc[-1], 2)}% | test acc = {round(100*test_acc[-1], 2)}%')
+                    print(f'                        -> train  acc = {round(100*train_acc[-1], 2)}% | valid acc = {round(100*valid_acc[-1], 2)}% | test acc = {round(100*test_acc[-1], 2)}%')
                     if verbose >= 2:
                         if len(train_acc) >= (FREQ + 1):
                             train_acc_delta = train_acc[-1] - train_acc[-FREQ-1]
@@ -317,17 +338,18 @@ class Net(nn.Module):
                             s1 = '+' if train_loss_delta > 0 else ''
                             s2 = '+' if test_loss_delta > 0 else ''            
                             print(f'    Train Loss Delta: {s1}{round(train_loss_delta, 4)} \n     Test Loss Delta: {s2}{round(test_loss_delta, 4)}')
-        # best_index = np.argmax(test_acc)
         best_index = np.argmax(valid_acc)
+        torch.save(self.state_dict(), os.path.join(dir_destination, f'saved_model_fold_{fold}.pth'))
         print(f'[DONE] FOLD {fold} --- Best Valid Epoch Results ({best_index + 1}) -> TRAIN ACC = {round(100*train_acc[best_index], 2)}% | VALID ACC = {round(100*valid_acc[best_index], 2)}% | TEST ACC = {round(100*test_acc[best_index], 2)}%\n')
-        print([round(x, 4) for x in train_acc], '\n')
-        print([round(x, 4) for x in valid_acc], '\n')
-        print([round(x, 4) for x in test_acc], '\n')
+        if verbose >= 1:
+            print([round(x, 4) for x in train_acc], '\n')
+            print([round(x, 4) for x in valid_acc], '\n')
+            print([round(x, 4) for x in test_acc], '\n')
         return fold_test_preds[best_index], test_acc, test_loss_vals, fold_test_labels, fold_valid_preds[best_index], fold_valid_labels, valid_id_pairs
 
 if __name__ == '__main__':
     image_dim = 64
-    tau_dim = 2048
+    tau_dim = 128
     alpha = args.lr
     epochs = args.epochs
     lamb = args.lamb
@@ -338,15 +360,14 @@ if __name__ == '__main__':
     verbose = args.verbose
     W = args.W
     threshs = (args.th_ci, args.th_hiv)
-    assert tau_dim >= 128
     model_args = (alpha, epochs, lamb, batch_size, wd, num_folds, verbose)
-    dir_destination = f'epochs = {epochs} - alpha = {alpha} - batch_size = {batch_size} - lambda = {lamb} - W = {W} - seed {seed}'
+    dir_destination = f'alpha = {alpha} - epochs = {epochs} - lambda = {lamb} - batch_size = {batch_size} - wd = {wd} - num_folds = {num_folds} - W = {W} - seed = {seed}'
     try:
         os.mkdir(dir_destination) # make new directory for results
     except:
         pass # directory already exists -- results will be overridden
     model = Net(image_dim=image_dim, tau_dim=tau_dim, thresh_tuple=threshs).double().cuda()
-    images, labels, sigmas, delta_sigmas, ids = model.load_matched_data(sigma_feat='npz')
+    images, labels, sigmas, delta_sigmas, ids = model.load_matched_data(sigma_feat='npz', seed=seed)
     ratio = model.ratio
     print(f'Run Initialized: {dir_destination}')
     if verbose >= 1:
@@ -376,6 +397,6 @@ if __name__ == '__main__':
             pk.dump(fold_ids, handle)
         with open(f'{dir_destination}/final_valid_preds_fold_{k}_{model_args}.pickle', 'wb') as handle:
             pk.dump(fold_valid_preds, handle)
-        with open(f'{dir_destination}/labels_valid_fold_{k}_{model_args}.pickle', 'wb') as handle:
+        with open(f'{dir_destination}/final_valid_labels_fold_{k}_{model_args}.pickle', 'wb') as handle:
             pk.dump(fold_valid_labels, handle)
         torch.save(model.state_dict(), os.path.join(dir_destination, f'trained_model_fold_{k}_{model_args}.pth'))
