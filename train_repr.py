@@ -107,26 +107,12 @@ class Net(nn.Module):
         return e, y
     
     def bce_loss(self, emb_t1, emb_t2, delta_sigma, pred_1, pred_2, labels_1, labels_2, lamb):
-        pred_1 = pred_1.nan_to_num(0.5).double()
-        pred_2 = pred_2.nan_to_num(0.5).double()
-        # first element of pairs
-        w = torch.ones(labels_1.shape[0], device=self.device)
-        w[labels_1[:, 0] == 1] = self.ratio
-        bce = nn.BCELoss(weight=w)
-        bce_loss = bce(pred_1[:, 0], labels_1[:, 0])
-        w = torch.ones(labels_1.shape[0], device=self.device)
-        w[labels_1[:, 1] == 1] = self.ratio
-        bce = nn.BCELoss(weight=w)
-        bce_loss += bce(pred_1[:, 1], labels_1[:, 1])
-        # second element of pairs
-        w = torch.ones(labels_2.shape[0], device=self.device)
-        w[labels_2[:, 0] == 1] = self.ratio
-        bce = nn.BCELoss(weight=w)
-        bce_loss += bce(pred_2[:, 0], labels_2[:, 0])
-        w = torch.ones(labels_2.shape[0], device=self.device)
-        w[labels_2[:, 1] == 1] = self.ratio
-        bce = nn.BCELoss(weight=w)
-        bce_loss += bce(pred_2[:, 1], labels_2[:, 1])
+        bce = nn.BCELoss(reduction='none')
+        first_bce = bce(pred_1, labels_1)
+        second_bce = bce(pred_2, labels_2)        
+        first_bce[labels_1 == 1] *= self.ratio
+        second_bce[labels_2 == 1] *= self.ratio
+        bce_loss = (first_bce + second_bce).sum()
         return bce_loss
 
     def repr_loss(self, emb_t1, emb_t2, delta_sigma, pred_1, pred_2, labels_1, labels_2, lamb):
