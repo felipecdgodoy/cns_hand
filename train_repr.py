@@ -54,7 +54,7 @@ class PairedDataset(Dataset):
 
 class Net(nn.Module):
 
-    def __init__(self, image_dim=64, tau_dim=2048, thresh_tuple=(0.5, 0.5)):
+    def __init__(self, image_dim=64, tau_dim=2048, thresh_tuple=(0.5, 0.5), hand_split=None):
         """ image_dim (int): value 'D' such that all images are a 3D-volume DxDxD """
         """ tau_dim (int): number of dimensions to encode the tau-direction in """
         super(Net, self).__init__()
@@ -63,7 +63,7 @@ class Net(nn.Module):
         self.dim = image_dim
         self.W = args.W
         self.ratio = None # ratio between label 0s and label 1s for the BCE loss weighting. !! dynamically populated at runtime !!
-        self.hand_split = 427 # separation index for (train+valid) | (test), marking the first index of the sequence of HAND samples at load-time
+        self.hand_split = hand_split # separation index for (train+valid) | (test), marking the first index of the sequence of HAND samples at load-time !! dynamically populated at runtime if left None !!
         # Encoder from 3D-volume input to latent-space vector
         self.encode = nn.Sequential(
             nn.Sequential(nn.Conv3d(in_channels=1, out_channels=4, kernel_size=3, padding=1),
@@ -135,6 +135,21 @@ class Net(nn.Module):
         corr = ((batch_preds >= self.thresh) == batch_labels).all(dim=1).sum()
         return int(corr.data)
     
+    def balanced_accuracy(self, pair_preds, pair_labels):
+        full_preds = torch.vstack([torch.vstack(tup) for tup in pair_preds[0]])
+        full_labels = torch.vstack([torch.vstack(tup) for tup in pair_labels[0]])
+        if len(pair_labels) > 1:
+            for i in range(1, len(pair_labels)):
+                full_preds = torch.vstack((full_preds, torch.vstack([torch.vstack(tup) for tup in pair_preds[i]])))
+                full_labels = torch.vstack((full_labels, torch.vstack([torch.vstack(tup) for tup in pair_labels[i]])))
+        pred_correctness = ((full_preds >= self.thresh) == full_labels).all(dim=1)
+        accs = list()
+        for label in full_labels.unique(dim=0):
+            label_mask = (full_labels == label).all(dim=1)
+            acc = int(pred_correctness[label_mask].sum()) / int(pred_correctness[label_mask].shape[0])
+            accs.append(acc)
+        return np.array(accs).mean()
+    
     def load_matched_data(self, path_to_pickles='', sigma_feat='npz', seed=1):
         sigma_feat = sigma_feat.lower()
         assert sigma_feat in ['npz', 'age', 'gender'], f'Unsurported feature. must be age, npz, or gender'
@@ -142,6 +157,9 @@ class Net(nn.Module):
         # Read in the data
         with open(f'{path_to_pickles}matched_patients.pickle', 'rb') as handle:
             ucsf_df = pk.load(handle)
+        if not self.hand_split:
+            hand_split = len(ucsf_df) - len(ucsf_df[ucsf_df['label'].astype(str) == '[1 1]']) # remove the HAND samples
+            self.hand_split = hand_split
         ids = np.array(ucsf_df['id'])
         images = np.stack(ucsf_df['image'])
         labels = np.array(ucsf_df['label'])
@@ -164,7 +182,7 @@ class Net(nn.Module):
         labels = labels[ordering]
         sigmas = sigmas[ordering]
         delta_sigmas = np.diff(sigmas)
-        return images, labels, sigmas, delta_sigmas, ids
+        return images, labels, sigmas, delta_sigmas, ids, self.hand_split
         
     def train_fold(self, all_images, all_labels, all_sigmas, all_delta_sigmas, model_args, fold, verbose):
         from sklearn.model_selection import StratifiedKFold
@@ -212,10 +230,12 @@ class Net(nn.Module):
         test_dl = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
         # Setup metrics & optimizer
         train_loss_vals, train_acc, valid_loss_vals, valid_acc, test_loss_vals, test_acc = [], [], [], [], [], []
-        fold_valid_preds, fold_test_preds = dict(), dict()
+        fold_train_preds, fold_valid_preds, fold_test_preds = dict(), dict(), dict()
         opt = optim.Adam(self.parameters(), lr=alpha, weight_decay=wd)
         # BEGIN TRAINING
         for e in tqdm(range(epochs), desc=f'Fold {fold}'):
+            fold_train_preds[e] = []
+            fold_train_labels = []
             total_loss, imgs_seen, correct = 0, 0, 0
             for i, batch in enumerate(train_dl):
                 batch_images, batch_labels, batch_del_sigmas, batch_id_pairs = batch
@@ -233,6 +253,8 @@ class Net(nn.Module):
                 l2 = batch_labels[:, 1, :].to(self.device)
                 correct += self.count_correct_batch(pred1, l1)
                 correct += self.count_correct_batch(pred2, l2)
+                fold_train_preds[e].append(list(zip(pred1, pred2)))
+                fold_train_labels.append(list(zip(l1, l2)))
                 opt.zero_grad()
                 loss1 = self.bce_loss(emb_t1=emb1, emb_t2=emb2, delta_sigma=ds, pred_1=pred1, pred_2=pred2,
                                         labels_1=l1, labels_2=l2, lamb=lamb)
@@ -248,7 +270,7 @@ class Net(nn.Module):
                 opt.step()                
             p = nn.utils.parameters_to_vector(self.parameters())
             train_loss_vals.append(total_loss / imgs_seen)
-            train_acc.append(correct / imgs_seen)
+            train_acc.append(self.balanced_accuracy(fold_train_preds[e], fold_train_labels))
             ## VALIDATION PORTION
             fold_valid_preds[e] = []
             fold_valid_labels = []
@@ -277,7 +299,7 @@ class Net(nn.Module):
                                             labels_1=l1, labels_2=l2, lamb=lamb)
                         total_loss += float(loss.data)
                     valid_loss_vals.append(total_loss / imgs_seen)
-                    valid_acc.append(correct / imgs_seen)
+                    valid_acc.append(self.balanced_accuracy(fold_valid_preds[e], fold_valid_labels))
             ## TESTING PORTION
             fold_test_preds[e] = []
             fold_test_labels = []
@@ -326,7 +348,7 @@ class Net(nn.Module):
                             print(f'    Train Loss Delta: {s1}{round(train_loss_delta, 4)} \n     Test Loss Delta: {s2}{round(test_loss_delta, 4)}')
         best_index = np.argmax(valid_acc)
         torch.save(self.state_dict(), os.path.join(dir_destination, f'saved_model_fold_{fold}.pth'))
-        print(f'[DONE] FOLD {fold} --- Best Valid Epoch Results ({best_index + 1}) -> TRAIN ACC = {round(100*train_acc[best_index], 2)}% | VALID ACC = {round(100*valid_acc[best_index], 2)}% | TEST ACC = {round(100*test_acc[best_index], 2)}%\n')
+        print(f'[DONE] FOLD {fold} --- Best Valid Epoch Results ({best_index + 1}) -> Train B-Acc = {round(100*train_acc[best_index], 2)}% | Valid B-Acc = {round(100*valid_acc[best_index], 2)}% | Test Acc = {round(100*test_acc[best_index], 2)}%\n')
         if verbose >= 1:
             print([round(x, 4) for x in train_acc], '\n')
             print([round(x, 4) for x in valid_acc], '\n')
@@ -353,7 +375,7 @@ if __name__ == '__main__':
     except:
         pass # directory already exists -- results will be overridden
     model = Net(image_dim=image_dim, tau_dim=tau_dim, thresh_tuple=threshs).double().cuda()
-    images, labels, sigmas, delta_sigmas, ids = model.load_matched_data(sigma_feat='npz', seed=seed)
+    images, labels, sigmas, delta_sigmas, ids, hand_split = model.load_matched_data(sigma_feat='npz', seed=seed)
     ratio = model.ratio
     print(f'Run Initialized: {dir_destination}')
     if verbose >= 1:
@@ -362,7 +384,7 @@ if __name__ == '__main__':
         if verbose >= 2:
             print(f'--> Starting Training')
     for k in range(num_folds):
-        model = Net(image_dim=image_dim, tau_dim=tau_dim, thresh_tuple=threshs).double().cuda()
+        model = Net(image_dim=image_dim, tau_dim=tau_dim, thresh_tuple=threshs, hand_split=hand_split).double().cuda()
         model.ratio = ratio
         fold_test_preds, fold_test_accs, fold_test_losses, fold_test_labels, fold_valid_preds, fold_valid_labels, fold_ids = model.train_fold(images,
                                                                                                                                               labels,
