@@ -17,7 +17,7 @@ def get_CE_label(numeric_label):
     mapping = {0: np.array([0, 0]), 1: np.array([1, 0]), 2: np.array([0, 1]), 3: np.array([1, 1])}
     return mapping[numeric_label]
 
-with open('new_ucsf.pickle', 'rb') as f:
+with open('ucsf_data.pickle', 'rb') as f:
     ucsf = pk.load(f)
 
 ucsf = pd.DataFrame(ucsf, columns=['filename', 'label', 'dataset', 'all_dataset', 'id', 'age', 'gender', 'npz'])
