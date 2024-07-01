@@ -25,18 +25,22 @@ parser.add_argument('--th_ci', type=float, default=0.5, help='classification thr
 parser.add_argument('--th_hiv', type=float, default=0.5, help='classification threshold on the HIV axis (y-axis)')
 parser.add_argument('--num_folds', type=int, default=4, help='number of folds to split data for CV')
 parser.add_argument('--verbose', type=int, default=1, help='defines how much info is logged to console during training')
+
 args = parser.parse_args()
+
 # set cuda device (GPU / CPU)
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
 if args.verbose >= 1:
     print(f'Device: {device}')
+
 # set deterministic behavior based on seed
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 random.seed(args.seed)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
-torch.backends.cudnn.enabled = False # DO NOT REMOVE!
+torch.backends.cudnn.enabled = False
 
 # DEBUG
 # torch.autograd.set_detect_anomaly(True)
@@ -94,16 +98,18 @@ class Net(nn.Module):
             nn.Flatten(start_dim=1),
         )
 
+        # Classifier for first output node
         self.first_linear = nn.Sequential(
             nn.Linear(in_features=64, out_features=8),
-            nn.Dropout(0.5),
+            nn.Dropout(0.25),
             nn.LeakyReLU(),
             nn.Linear(in_features=8, out_features=1),
         ).to(self.device)
 
+        # Classifier for second output node
         self.second_linear = nn.Sequential(
             nn.Linear(in_features=64, out_features=8),
-            nn.Dropout(0.5),      
+            nn.Dropout(0.25),      
             nn.LeakyReLU(),
             nn.Linear(in_features=8, out_features=1),
         ).to(self.device)
@@ -304,7 +310,6 @@ class Net(nn.Module):
                 opt.zero_grad()
                 loss = self.pair_loss(pred_1=pred1, pred_2=pred2,labels_1=l1, labels_2=l2,
                                           emb_t1=emb1, emb_t2=emb2, delta_sigma=ds, lamb=lamb, x=x, y=y, z=z)
-                # loss.backward(retain_graph=True)
                 loss.backward()
                 opt.step()
                 total_loss = total_loss + float(loss.data)                                 
@@ -336,7 +341,6 @@ class Net(nn.Module):
                     fold_valid_labels.append(list(zip(l1, l2)))
                     loss = self.pair_loss(pred_1=pred1, pred_2=pred2,labels_1=l1, labels_2=l2,
                                             emb_t1=emb1, emb_t2=emb2, delta_sigma=ds, lamb=lamb, x=x, y=y, z=z)
-                    # loss.backward(retain_graph=True)                
                     total_loss = total_loss + float(loss.data)
                 valid_loss_vals.append(total_loss / imgs_seen)
                 valid_acc.append(self.balanced_accuracy(fold_valid_preds[e], fold_valid_labels, agg=True))
@@ -366,7 +370,6 @@ class Net(nn.Module):
                     fold_test_labels.append(list(zip(l1, l2)))
                     loss = self.pair_loss(pred_1=pred1, pred_2=pred2,labels_1=l1, labels_2=l2,
                                             emb_t1=emb1, emb_t2=emb2, delta_sigma=ds, lamb=lamb, x=x, y=y, z=z)
-                    # loss.backward(retain_graph=True)                
                     total_loss = total_loss + float(loss.data)
                 test_loss_vals.append(total_loss / imgs_seen)
                 test_acc.append(self.balanced_accuracy(fold_test_preds[e], fold_test_labels, agg=True))
