@@ -9,8 +9,8 @@ from tqdm import tqdm
 np.random.seed(0)
 random.seed(0)
 
-COMMON_SIZE = 96 # dim for image 3D-volume (DxDxD)
-SAVE_PATH = '/scratch/groups/kpohl/matched_patients.pickle'
+COMMON_SIZE = 64 # dim for image 3D-volume (DxDxD)
+SAVE_PATH = 'matched_patients.pickle'
 
 def get_CE_label(numeric_label):
     """ map single digit label (0, 1, 2, 3) -> 2-bit binary label (00, 01, 10, 11)"""
@@ -21,9 +21,6 @@ with open('new_ucsf.pickle', 'rb') as f:
     ucsf = pk.load(f)
 
 ucsf = pd.DataFrame(ucsf, columns=['filename', 'label', 'dataset', 'all_dataset', 'id', 'age', 'gender', 'npz'])
-### Update to high-definition images
-ucsf['filename'] = ucsf['filename'].apply(lambda path : path.replace('img_64_', 'img_orig_'))
-###
 ucsf['id'] = ucsf['id'].astype(int)
 ucsf.loc[np.abs(ucsf['npz']) > 3.5, 'npz'] = np.nan
 ucsf['label'] = ucsf['label'].apply(lambda x : get_CE_label(x))
