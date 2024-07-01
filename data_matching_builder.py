@@ -9,7 +9,6 @@ from tqdm import tqdm
 np.random.seed(0)
 random.seed(0)
 
-COMMON_SIZE = 64 # dim for image 3D-volume (DxDxD)
 SAVE_PATH = 'matched_patients.pickle'
 
 def get_CE_label(numeric_label):
@@ -20,7 +19,7 @@ def get_CE_label(numeric_label):
 with open('ucsf_data.pickle', 'rb') as f:
     ucsf = pk.load(f)
 
-ucsf = pd.DataFrame(ucsf, columns=['filename', 'label', 'dataset', 'all_dataset', 'id', 'age', 'gender', 'npz'])
+ucsf = pd.DataFrame(ucsf, columns=['filename', 'label', 'dataset', 'id', 'age', 'gender', 'npz'])
 ucsf['id'] = ucsf['id'].astype(int)
 ucsf.loc[np.abs(ucsf['npz']) > 3.5, 'npz'] = np.nan
 ucsf['label'] = ucsf['label'].apply(lambda x : get_CE_label(x))
@@ -32,15 +31,10 @@ n = len(ucsf)
 x, y, z = nib.load(paths[0]).get_fdata().shape
 ucsf['image'] = [np.zeros((x, y, z))] * n
 
-patch_x = (x - COMMON_SIZE) // 2
-patch_y = (y - COMMON_SIZE) // 2
-patch_z = (z - COMMON_SIZE) // 2
-
 for i in tqdm(range(len(paths)), desc='processing images'):
     filename = paths[i]
     img = nib.load(filename)
-    img_data = img.get_fdata() # original size: 138 x 176 x 138
-    img_data = img_data[patch_x : -patch_x, patch_y : -patch_y, patch_z : -patch_z]
+    img_data = img.get_fdata()
     img_data = (img_data - np.mean(img_data)) / np.std(img_data)
     ucsf.loc[ucsf['filename'] == filename, 'image'] = [img_data]
 
