@@ -8,7 +8,8 @@ import pdb
 class FeatureExtractorPaired(nn.Module):
     def __init__(self, trainset_size = 0  , in_num_ch=1, img_size=(32,64,64), inter_num_ch=16, kernel_size=3, conv_act='relu',dropout=0.2, batch_size = 80):
         super(FeatureExtractorPaired, self).__init__()
-        self.tau = Parameter(torch.ones(2048).float())# initial "neutral" tau direction, which gets learned in training
+        self.tau = Parameter(torch.ones(2048).float())
+        # initial "neutral" tau direction, which gets learned in training
         ## Encode to 2048-vector, set as parameter for easy access during training
 
         self.relu_maxpool_cur_1 = nn.Sequential(
@@ -121,61 +122,33 @@ class FeatureExtractorRes(nn.Module):
         self.conv1 = nn.Sequential(
                         nn.Conv3d(in_num_ch, inter_num_ch, kernel_size=3, padding=1),
                         nn.ReLU(inplace=True),
-#                         MetadataNorm(batch_size=batch_size, cf_kernel=cf_kernel, num_features = 16*64*64*64, trainset_size = trainset_size),
-#                         nn.BatchNorm3d(inter_num_ch),
-#                         nn.MaxPool3d(2)
         )
         self.conv1_b = nn.Sequential(
                         nn.Conv3d(inter_num_ch, inter_num_ch, kernel_size=3, padding=1),
-#                         nn.ReLU(inplace=True),
-#                         MetadataNorm(batch_size=batch_size, cf_kernel=cf_kernel, num_features = 16*64*64*64, trainset_size = trainset_size),
-#                         nn.BatchNorm3d(inter_num_ch),
-#                         nn.MaxPool3d(2)
         )
 
         self.conv2 = nn.Sequential(
                         nn.Conv3d(inter_num_ch, 2*inter_num_ch, kernel_size=3, padding=1),
                         nn.ReLU(inplace=True),
-#                         MetadataNorm(batch_size=batch_size, cf_kernel=cf_kernel, num_features = 32*32*32*32, trainset_size = trainset_size),
-#                         nn.BatchNorm3d(2*inter_num_ch),
-#                         nn.MaxPool3d(2)
         )
         self.conv2_b = nn.Sequential(
                         nn.Conv3d(2*inter_num_ch, 2*inter_num_ch, kernel_size=3, padding=1),
-#                         nn.ReLU(inplace=True),
-#                         MetadataNorm(batch_size=batch_size, cf_kernel=cf_kernel, num_features = 32*32*32*32, trainset_size = trainset_size),
-#                         nn.BatchNorm3d(2*inter_num_ch),
-#                         nn.MaxPool3d(2)
         )
 
         self.conv3 = nn.Sequential(
                         nn.Conv3d(2*inter_num_ch, 4*inter_num_ch, kernel_size=3, padding=1),
                         nn.ReLU(inplace=True),
-#                         MetadataNorm(batch_size=batch_size, cf_kernel=cf_kernel, num_features = 64*16*16*16, trainset_size = trainset_size),
-#                         nn.BatchNorm3d(4*inter_num_ch),
-#                         nn.MaxPool3d(2)
         )
         self.conv3_b = nn.Sequential(
                         nn.Conv3d(4*inter_num_ch, 4*inter_num_ch, kernel_size=3, padding=1),
-#                         nn.ReLU(inplace=True),
-#                         MetadataNorm(batch_size=batch_size, cf_kernel=cf_kernel, num_features = 64*16*16*16, trainset_size = trainset_size),
-#                         nn.BatchNorm3d(4*inter_num_ch),
-#                         nn.MaxPool3d(2)
         )
 
         self.conv4 = nn.Sequential(
                         nn.Conv3d(4*inter_num_ch, 2*inter_num_ch, kernel_size=3, padding=1),
                         nn.ReLU(inplace=True),
-#                         MetadataNorm(batch_size=batch_size, cf_kernel=cf_kernel, num_features = 32*8*8*8, trainset_size = trainset_size),
-#                         nn.BatchNorm3d(2*inter_num_ch),
-#                         nn.MaxPool3d(2)
         )
         self.conv4_b = nn.Sequential(
                         nn.Conv3d(2*inter_num_ch, 2*inter_num_ch, kernel_size=3, padding=1),
-#                         nn.ReLU(inplace=True),
-#                         MetadataNorm(batch_size=batch_size, cf_kernel=cf_kernel, num_features = 32*8*8*8, trainset_size = trainset_size),
-#                         nn.BatchNorm3d(2*inter_num_ch),
-#                         nn.MaxPool3d(2)
         )
 
 
@@ -210,29 +183,22 @@ class FeatureExtractor(nn.Module):
         self.conv1 = nn.Sequential(
                         nn.Conv3d(in_num_ch, inter_num_ch, kernel_size=3, padding=1),
                         nn.LeakyReLU(inplace=True),
-#                         MetadataNorm(batch_size=batch_size, cf_kernel=cf_kernel, num_features = 16*64*64*64, trainset_size = trainset_size),
-#                         nn.BatchNorm3d(inter_num_ch),
                         nn.MaxPool3d(2))
 
         self.conv2 = nn.Sequential(
                         nn.Conv3d(inter_num_ch, 2*inter_num_ch, kernel_size=3, padding=1),
                         nn.LeakyReLU(inplace=True),
-#                         MetadataNorm(batch_size=batch_size, cf_kernel=cf_kernel, num_features = 32*32*32*32, trainset_size = trainset_size),
-#                         nn.BatchNorm3d(2*inter_num_ch),
                         nn.MaxPool3d(2))
 
         self.conv3 = nn.Sequential(
                         nn.Conv3d(2*inter_num_ch, 4*inter_num_ch, kernel_size=3, padding=1),
                         nn.LeakyReLU(inplace=True),
-#                         MetadataNorm(batch_size=batch_size, cf_kernel=cf_kernel, num_features = 64*16*16*16, trainset_size = trainset_size),
-#                         nn.BatchNorm3d(4*inter_num_ch),
                         nn.MaxPool3d(2))
 
         self.conv4 = nn.Sequential(
                         nn.Conv3d(4*inter_num_ch, 2*inter_num_ch, kernel_size=3, padding=1),
                         nn.LeakyReLU(inplace=True),
                         MetadataNorm(batch_size=batch_size, cf_kernel=cf_kernel, num_features = 32*8*8*8, trainset_size = trainset_size, momentum=0.9),
-#                         nn.BatchNorm3d(2*inter_num_ch),
                         nn.MaxPool3d(2))
 
 
@@ -251,7 +217,6 @@ class fe(nn.Module):
         super().__init__()
         if fe_arch == 'baseline' or fe_arch == 'fe1':
             self.feature_extractor = FeatureExtractorPaired(trainset_size, in_num_ch, img_size, inter_num_ch, kernel_size, conv_act,dropout, batch_size)
-#             self.feature_extractor = FeatureExtractor(cf_kernel, trainset_size, in_num_ch, img_size, inter_num_ch, kernel_size, conv_act,dropout, batch_size)
             num_feat = int(2*inter_num_ch * (img_size[0]*img_size[1]*img_size[2]) / ((2**4)**3))
         else:
             raise ValueError('Not yet Implemented')
