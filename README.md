@@ -1,6 +1,8 @@
-This repo doesn't by default contain all the necessary ```pickle``` files to run experiments (because of their size), which handle the feature pre-processing, patient matching, and image loading.
+This repo doesn't by default contain all the necessary ```pickle``` and ```img``` files to run experiments (because of their size), which handle the feature pre-processing, patient matching, and image loading.
 
-So before anything, run: ```python3 data_matching_builder.py```
+So before anything:
+1. Download into this repo the ```img_64_{class_name}``` directories. Link: https://drive.google.com/drive/folders/1Ren6ubjy975DxJUmfmtrleLNZZ4XQWF6
+2. run: ```python3 data_matching_builder.py```
 
 A baseline experiment can then be deployed through: ```sh run_baseline.sh```
 
